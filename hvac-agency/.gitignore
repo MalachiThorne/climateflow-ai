@@ -1,0 +1,7 @@
+node_modules/
+.env
+.next/
+out/
+data/send_log.json
+data/hvac_leads.csv
+data/*.json
