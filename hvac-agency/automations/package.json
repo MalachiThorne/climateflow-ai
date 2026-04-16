@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test \"test/**/*.test.js\""
   },
   "keywords": [],
   "author": "",
@@ -17,7 +17,9 @@
     "express": "^5.2.1",
     "googleapis": "^171.4.0",
     "node-cron": "^4.2.1",
+    "nodemailer": "^8.0.5",
     "pg": "^8.20.0",
+    "stripe": "^22.0.1",
     "twilio": "^5.13.1"
   }
 }

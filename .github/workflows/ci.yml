@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  automations:
+    name: automations — test & docker build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hvac-agency/automations
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            changed:
+              - 'hvac-agency/automations/**'
+              - '.github/workflows/ci.yml'
+
+      - uses: actions/setup-node@v4
+        if: steps.changes.outputs.changed == 'true'
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: hvac-agency/automations/package-lock.json
+
+      - name: Install dependencies
+        if: steps.changes.outputs.changed == 'true'
+        run: npm ci
+
+      - name: Run smoke tests
+        if: steps.changes.outputs.changed == 'true'
+        run: npm test
+
+      - name: Set up Docker Buildx
+        if: steps.changes.outputs.changed == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        if: steps.changes.outputs.changed == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: hvac-agency/automations
+          push: false
+          load: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  landing-page:
+    name: landing-page — lint & build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hvac-agency/landing-page
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            changed:
+              - 'hvac-agency/landing-page/**'
+              - '.github/workflows/ci.yml'
+
+      - uses: actions/setup-node@v4
+        if: steps.changes.outputs.changed == 'true'
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: hvac-agency/landing-page/package-lock.json
+
+      - name: Install dependencies
+        if: steps.changes.outputs.changed == 'true'
+        run: npm ci
+
+      - name: Lint
+        if: steps.changes.outputs.changed == 'true'
+        run: npm run lint
+
+      - name: Build
+        if: steps.changes.outputs.changed == 'true'
+        run: npm run build
