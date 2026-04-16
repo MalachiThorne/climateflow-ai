@@ -299,6 +299,111 @@ async function sendBillingLinkEmail(ownerEmail, ownerName, businessName, billing
   });
 }
 
+async function sendWeeklyDigestEmail(ownerEmail, ownerName, businessName, stats) {
+  const weekOf = new Date(stats.since).toLocaleDateString("en-US", { month: "long", day: "numeric" });
+  const weekEnd = new Date(stats.until).toLocaleDateString("en-US", { month: "long", day: "numeric" });
+  const totalActivity = stats.missedCallsRescued + stats.appointmentsBooked +
+    stats.estimatesConverted + stats.reviewsResponded;
+  const subject = totalActivity > 0
+    ? `Your week at ${h(businessName)} — ${stats.appointmentsBooked} booked, ${stats.missedCallsRescued} leads rescued`
+    : `Weekly summary for ${h(businessName)} — ${weekOf}`;
+
+  function stat(value, label, color = "#38bdf8") {
+    return `
+      <div style="text-align:center;padding:16px 12px;background:#070c18;border:1px solid #1e3a5f;border-radius:8px;">
+        <div style="font-size:32px;font-weight:800;color:${color};line-height:1;">${value}</div>
+        <div style="font-size:12px;color:#64748b;margin-top:4px;line-height:1.3;">${label}</div>
+      </div>`;
+  }
+
+  await transporter.sendMail({
+    from: `"${config.email.fromName}" <${config.email.fromEmail}>`,
+    to: ownerEmail,
+    subject,
+    html: `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0a0f1e;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <div style="max-width:600px;margin:40px auto;background:#0d1526;border:1px solid #1e3a5f;border-radius:12px;overflow:hidden;">
+    <div style="background:linear-gradient(135deg,#0ea5e9,#38bdf8);padding:28px 40px;">
+      <p style="color:rgba(255,255,255,0.8);font-size:13px;margin:0 0 4px;text-transform:uppercase;letter-spacing:0.08em;">Weekly Summary</p>
+      <h1 style="color:#fff;margin:0;font-size:22px;font-weight:700;">${h(businessName)}</h1>
+      <p style="color:rgba(255,255,255,0.75);font-size:14px;margin:6px 0 0;">${weekOf} – ${weekEnd}</p>
+    </div>
+
+    <div style="padding:32px 40px;">
+      <p style="color:#94a3b8;font-size:15px;margin:0 0 24px;">Hi ${h(ownerName)}, here's what your AI system did this week while you were on the job.</p>
+
+      <p style="color:#f1f5f9;font-size:13px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;margin:0 0 12px;">Lead Rescue</p>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:0 0 28px;">
+        ${stat(stats.missedCallsRescued, "Missed calls rescued", "#38bdf8")}
+        ${stat(stats.leadsQualified, "Leads qualified", "#818cf8")}
+        ${stat(stats.appointmentsBooked, "Appointments booked", "#34d399")}
+      </div>
+
+      <p style="color:#f1f5f9;font-size:13px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;margin:0 0 12px;">Estimate Follow-Up</p>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:0 0 28px;">
+        ${stat(stats.estimatesSent, "Estimates tracked", "#38bdf8")}
+        ${stat(stats.estimatesFollowedUp, "Follow-ups sent", "#818cf8")}
+        ${stat(stats.estimatesConverted, "Estimates won", "#34d399")}
+      </div>
+
+      <p style="color:#f1f5f9;font-size:13px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;margin:0 0 12px;">Review Autopilot</p>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:0 0 28px;">
+        ${stat(stats.reviewRequestsSent, "Review requests sent", "#38bdf8")}
+        ${stat(stats.reviewsResponded, "Reviews responded", "#34d399")}
+      </div>
+
+      ${stats.revenueProxy > 0 ? `
+      <div style="background:rgba(52,211,153,0.08);border:1px solid rgba(52,211,153,0.25);border-radius:10px;padding:20px;margin:0 0 28px;text-align:center;">
+        <p style="color:#6ee7b7;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;margin:0 0 6px;">Estimated revenue recovered</p>
+        <p style="color:#34d399;font-size:36px;font-weight:800;margin:0;">$${stats.revenueProxy.toLocaleString()}</p>
+        <p style="color:#64748b;font-size:12px;margin:6px 0 0;">Based on ${stats.appointmentsBooked} booked appointment${stats.appointmentsBooked !== 1 ? "s" : ""} × avg ticket</p>
+      </div>` : ""}
+
+      <hr style="border:none;border-top:1px solid #1e3a5f;margin:0 0 20px;">
+      <p style="color:#475569;font-size:12px;line-height:1.6;margin:0;">
+        Sent automatically every Monday by ClimateFlow AI.
+        Questions? Reply to this email.
+      </p>
+    </div>
+  </div>
+</body>
+</html>`,
+  });
+}
+
+async function sendCalendarNudgeEmail(ownerEmail, ownerName, businessName, calendarConnectUrl) {
+  await transporter.sendMail({
+    from: `"${config.email.fromName}" <${config.email.fromEmail}>`,
+    to: ownerEmail,
+    subject: `One step left to activate ${businessName} — connect your calendar`,
+    html: `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#0a0f1e;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <div style="max-width:600px;margin:40px auto;background:#0d1526;border:1px solid #1e3a5f;border-radius:12px;overflow:hidden;">
+    <div style="padding:32px 40px;">
+      <h2 style="color:#f1f5f9;margin:0 0 16px;">Your AI is live — but can't book yet</h2>
+      <p style="color:#94a3b8;font-size:15px;line-height:1.6;margin:0 0 24px;">
+        Hi ${h(ownerName)}, <strong style="color:#f1f5f9;">${h(businessName)}</strong> is set up and responding to missed calls.
+        But the AI can't book appointments until you connect your Google Calendar — it takes 30 seconds.
+      </p>
+      <a href="${safeUrl(calendarConnectUrl)}" style="display:inline-block;background:linear-gradient(135deg,#0ea5e9,#38bdf8);color:#fff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:32px;">
+        Connect Google Calendar →
+      </a>
+      <p style="color:#64748b;font-size:13px;line-height:1.6;margin:0;">
+        Without this, the AI will tell callers someone will call them back to confirm. Connect now so it can book the job on the spot.
+      </p>
+    </div>
+  </div>
+</body>
+</html>`,
+  });
+}
+
 module.exports = {
   sendWelcomeEmail,
   sendTrialEndingEmail,
@@ -307,4 +412,6 @@ module.exports = {
   sendEstimateFollowUpEmail,
   sendVerificationEmail,
   sendBillingLinkEmail,
+  sendWeeklyDigestEmail,
+  sendCalendarNudgeEmail,
 };

@@ -13,7 +13,8 @@ const { checkForNewReviews } = require("./review-monitor");
 const { getAuthUrl, consumeOAuthState, handleOAuthCallback, getAvailableSlots, bookAppointment, isCalendarConnected } = require("./calendar");
 const { provisionPhoneNumber } = require("./sms");
 const { createSubscription, cancelSubscription, createBillingPortalSession, constructWebhookEvent, handleWebhookEvent } = require("./billing");
-const { sendWelcomeEmail, sendTrialEndingEmail, sendPaymentFailedEmail, sendVerificationEmail, sendBillingLinkEmail } = require("./email");
+const { sendWelcomeEmail, sendTrialEndingEmail, sendPaymentFailedEmail, sendVerificationEmail, sendBillingLinkEmail, sendWeeklyDigestEmail, sendCalendarNudgeEmail } = require("./email");
+const { getClientStats, lastWeekWindow } = require("./stats");
 const { FEATURES, ALL_FEATURES, hasFeature } = require("./features");
 const signedUrl = require("./signedUrl");
 const store = require("./store");
@@ -263,7 +264,7 @@ const BILLING_LINK_TTL_SECONDS = 30 * 60;
 // Twilio is NOT provisioned until the email is verified — this prevents email-
 // spoofing signups from burning a real phone number.
 app.post("/api/signup", signupLimiter, async (req, res) => {
-  const { businessName, ownerName, ownerEmail, serviceArea, areaCode, paymentMethodId, plan } = req.body;
+  const { businessName, ownerName, ownerEmail, ownerPhone, serviceArea, areaCode, paymentMethodId, plan } = req.body;
 
   if (!businessName || !ownerName || !ownerEmail || !serviceArea || !paymentMethodId) {
     return res.status(400).json({ error: "All fields are required" });
@@ -295,6 +296,7 @@ app.post("/api/signup", signupLimiter, async (req, res) => {
       businessName,
       ownerName,
       ownerEmail,
+      ownerPhone: ownerPhone || null,
       serviceArea,
       areaCode: areaCode || "503",
       planId: selectedPlan.id,
@@ -375,6 +377,7 @@ app.get("/api/signup/verify/:pendingId", verifyLimiter, async (req, res) => {
       name: pending.businessName,
       ownerName: pending.ownerName,
       ownerEmail: pending.ownerEmail,
+      ownerPhone: pending.ownerPhone || null,
       serviceArea: pending.serviceArea,
       services: ["AC repair", "Furnace repair", "Heat pump service", "Maintenance plans"],
       hours: "Mon-Fri 8am-6pm, Emergency service 24/7",
@@ -764,6 +767,55 @@ cron.schedule("*/30 * * * *", async () => {
     const results = await checkForNewReviews(client, respondToReview);
     if (results.length > 0) console.log(`[Cron] Processed ${results.length} reviews for ${client.name}`);
   });
+});
+
+// Monday 8am: send each active client a digest of last week's activity.
+cron.schedule("0 8 * * 1", async () => {
+  const all = await listClients();
+  const active = all.filter((c) => !c.suspended);
+  console.log(`[Weekly Digest] Sending to ${active.length} clients`);
+  const { since, until } = lastWeekWindow();
+  await runConcurrent(active, async (client) => {
+    try {
+      const stats = await getClientStats(client.id, since, until);
+      await sendWeeklyDigestEmail(client.ownerEmail, client.ownerName, client.name, stats);
+      console.log(`[Weekly Digest] Sent to ${client.name}`);
+    } catch (err) {
+      console.error(`[Weekly Digest] Failed for ${client.name}: ${err.message}`);
+    }
+  });
+});
+
+// Hourly: nudge clients who signed up 24–48h ago but still haven't connected
+// their Google Calendar. After 48h we stop nudging to avoid spam.
+cron.schedule("0 * * * *", async () => {
+  const all = await listClients();
+  const now = Date.now();
+  const H24 = 24 * 60 * 60 * 1000;
+  const H48 = 48 * 60 * 60 * 1000;
+
+  for (const client of all) {
+    if (client.suspended) continue;
+    const age = now - new Date(client.createdAt).getTime();
+    if (age < H24 || age > H48) continue;
+
+    try {
+      const connected = await isCalendarConnected(client.id);
+      if (connected) continue;
+
+      const calendarConnectUrl = signedUrl.buildUrl(
+        config.server.webhookBaseUrl,
+        `/api/calendar/connect/${client.id}`,
+        "calendar_connect",
+        client.id,
+        7 * 24 * 60 * 60  // 7-day window for the nudge link
+      );
+      await sendCalendarNudgeEmail(client.ownerEmail, client.ownerName, client.name, calendarConnectUrl);
+      console.log(`[Onboarding Nudge] Calendar nudge sent to ${client.name}`);
+    } catch (err) {
+      console.error(`[Onboarding Nudge] Failed for ${client.name}: ${err.message}`);
+    }
+  }
 });
 
 // Hourly cleanup: expire abandoned pending signups (cancel their Stripe subs

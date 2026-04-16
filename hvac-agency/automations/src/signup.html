@@ -205,9 +205,15 @@
 
           <div class="form-section">
             <h3>Account</h3>
-            <div class="field">
-              <label>Email address</label>
-              <input type="email" name="ownerEmail" placeholder="mike@portlandcomfort.com" required>
+            <div class="field-row">
+              <div class="field">
+                <label>Email address</label>
+                <input type="email" name="ownerEmail" placeholder="mike@portlandcomfort.com" required>
+              </div>
+              <div class="field">
+                <label>Your mobile <span style="color:var(--dim);font-weight:400;">(for job alerts)</span></label>
+                <input type="tel" name="ownerPhone" placeholder="+15035551234">
+              </div>
             </div>
           </div>
 
@@ -344,6 +350,7 @@
             businessName: form.businessName.value,
             ownerName: form.ownerName.value,
             ownerEmail: form.ownerEmail.value,
+            ownerPhone: form.ownerPhone.value || null,
             serviceArea: form.serviceArea.value,
             areaCode: form.areaCode.value,
             paymentMethodId: paymentMethod.id,

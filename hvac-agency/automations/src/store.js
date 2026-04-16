@@ -251,6 +251,29 @@ async function findExpiredRecords(collection, thresholdMs) {
   return rows.map((r) => r.data);
 }
 
+// Count records in a collection matching optional field=value filters and a
+// createdAt ISO-string range. Used exclusively for stats aggregation — not
+// exposed on any HTTP route. `filters` is a plain { field: value } object
+// whose keys must be in ALLOWED_FIELDS.
+async function countRecordsInRange(collection, businessId, since, until, filters = {}) {
+  const entries = Object.entries(filters);
+  entries.forEach(([field]) => assertField(field));
+  const extra = entries
+    .map(([field], i) => `AND data->>'${field}' = $${i + 5}`)
+    .join(" ");
+  const values = [collection, businessId, since.toISOString(), until.toISOString(), ...entries.map(([, v]) => v)];
+  const { rows } = await pool.query(
+    `SELECT COUNT(*) FROM records
+     WHERE collection = $1
+       AND data->>'businessId' = $2
+       AND (data->>'createdAt')::timestamptz >= $3
+       AND (data->>'createdAt')::timestamptz < $4
+       ${extra}`,
+    values
+  );
+  return parseInt(rows[0].count, 10);
+}
+
 // Bulk delete by expiry — cheaper than find-then-delete when no per-record action is needed.
 async function deleteExpiredRecords(collection, thresholdMs) {
   const { rowCount } = await pool.query(
@@ -280,4 +303,5 @@ module.exports = {
   findRecordsByFields,
   findExpiredRecords,
   deleteExpiredRecords,
+  countRecordsInRange,
 };

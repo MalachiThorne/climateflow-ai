@@ -118,6 +118,13 @@ async function processToolCalls(response, callerPhone, business) {
         if (result.success) {
           const lead = await store.findRecordByFields(LEADS, { phone: callerPhone, businessId: business.id });
           if (lead) await store.updateRecord(LEADS, lead.id, { status: "booked" });
+
+          // Real-time alert to the owner if they provided a mobile number at signup.
+          if (business.ownerPhone) {
+            const alertMsg = `[ClimateFlow] Job booked! ${input.customer_name.trim()} — ${input.service_type.trim()} on ${input.date} at ${input.time}. Caller: ${callerPhone}`;
+            sendSMS(business.ownerPhone, alertMsg, business.twilioNumber)
+              .catch((err) => console.error(`[Lead Rescue] Owner alert SMS failed: ${err.message}`));
+          }
         }
       }
     }
