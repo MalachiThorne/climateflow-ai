@@ -11,9 +11,9 @@ async function requestReview(customerPhone, customerName, jobType, business) {
     `We'd really appreciate it if you could leave us a quick review — it helps other homeowners find reliable HVAC service. ` +
     `Here's the link: ${business.googleReviewLink}\n\nThank you! — ${business.ownerName}`;
 
-  await sendSMS(customerPhone, message);
+  await sendSMS(customerPhone, message, business.twilioNumber);
 
-  store.addRecord(REVIEW_REQUESTS, {
+  await store.addRecord(REVIEW_REQUESTS, {
     phone: customerPhone,
     customerName,
     jobType,
@@ -27,29 +27,42 @@ async function requestReview(customerPhone, customerName, jobType, business) {
 async function respondToReview(review, business) {
   const systemPrompt = buildReviewResponsePrompt(business);
 
+  // Review text is attacker-controlled. Pass source: "review" so chat() fences
+  // the entire user turn and warns the model not to treat contents as instructions.
+  // The rest of the string is server-built metadata, which the fence wraps along
+  // with the text — acceptable since the warning still applies to the whole block.
   const userMessage =
     `Review from ${review.authorName} (${review.rating} stars):\n"${review.text}"\n\n` +
     `Write a response from the business owner.`;
 
   if (review.rating <= 3) {
-    const stored = store.addRecord(REVIEWS, {
+    const stored = await store.addRecord(REVIEWS, {
       ...review,
       businessId: business.id,
       status: "pending_owner_approval",
       suggestedResponse: null,
     });
 
-    const suggestedResponse = await chat(systemPrompt, userMessage);
+    const suggestedResponse = await chat(systemPrompt, userMessage, [], { source: "review" });
 
-    store.updateRecord(REVIEWS, stored.id, { suggestedResponse });
+    await store.updateRecord(REVIEWS, stored.id, { suggestedResponse });
 
     console.log(`[Review Autopilot] Negative review from ${review.authorName} — flagged for owner approval`);
+
+    if (business.ownerPhone) {
+      const stars = "★".repeat(review.rating) + "☆".repeat(5 - review.rating);
+      const preview = review.text ? review.text.slice(0, 100) + (review.text.length > 100 ? "…" : "") : "";
+      const msg = `[ClimateFlow] ${stars} review needs your attention — ${review.authorName}: "${preview}" Reply suggested. Check your dashboard.`;
+      sendSMS(business.ownerPhone, msg, business.twilioNumber)
+        .catch((err) => console.error(`[Review Autopilot] Owner alert SMS failed:`, err.message));
+    }
+
     return { action: "flagged", suggestedResponse };
   }
 
-  const response = await chat(systemPrompt, userMessage);
+  const response = await chat(systemPrompt, userMessage, [], { source: "review" });
 
-  store.addRecord(REVIEWS, {
+  await store.addRecord(REVIEWS, {
     ...review,
     businessId: business.id,
     status: "responded",
@@ -61,10 +74,10 @@ async function respondToReview(review, business) {
 }
 
 async function sendFollowUpReviewRequest(customerPhone, customerName, business) {
-  const existing = store.findRecord(
-    REVIEW_REQUESTS,
-    (r) => r.phone === customerPhone && r.businessId === business.id
-  );
+  const existing = await store.findRecordByFields(REVIEW_REQUESTS, {
+    phone: customerPhone,
+    businessId: business.id,
+  });
 
   if (!existing || existing.status !== "sent") return;
 
@@ -73,8 +86,8 @@ async function sendFollowUpReviewRequest(customerPhone, customerName, business) 
     `If you have 30 seconds, we'd love to hear how your service went: ${business.googleReviewLink}\n` +
     `No worries if not — thanks again for choosing us!`;
 
-  await sendSMS(customerPhone, message);
-  store.updateRecord(REVIEW_REQUESTS, existing.id, { status: "follow_up_sent" });
+  await sendSMS(customerPhone, message, business.twilioNumber);
+  await store.updateRecord(REVIEW_REQUESTS, existing.id, { status: "follow_up_sent" });
 
   console.log(`[Review Autopilot] Follow-up review request sent to ${customerName}`);
 }

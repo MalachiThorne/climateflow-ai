@@ -1,3 +1,10 @@
+const SIGNUP_URL = process.env.NEXT_PUBLIC_SIGNUP_URL || "http://localhost:3001/signup";
+
+function signupFor(plan: string) {
+  const sep = SIGNUP_URL.includes("?") ? "&" : "?";
+  return `${SIGNUP_URL}${sep}plan=${plan}`;
+}
+
 export default function Home() {
   return (
     <>
@@ -24,7 +31,7 @@ export default function Home() {
             </span>
           </div>
           <a
-            href="#contact"
+            href={SIGNUP_URL}
             className="bg-primary text-white px-5 py-2.5 rounded-lg font-medium hover:bg-primary-dark transition-colors"
           >
             Get Started
@@ -53,7 +60,7 @@ export default function Home() {
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center mt-10">
               <a
-                href="#contact"
+                href={SIGNUP_URL}
                 className="bg-primary text-white px-8 py-4 rounded-lg font-semibold text-lg hover:bg-primary-dark transition-colors shadow-lg shadow-primary/25"
               >
                 Start Free 7-Day Trial
@@ -92,7 +99,7 @@ export default function Home() {
                     clipRule="evenodd"
                   />
                 </svg>
-                Setup in 24 hours
+                Setup in 3 minutes
               </div>
               <div className="flex items-center gap-2">
                 <svg
@@ -181,6 +188,7 @@ export default function Home() {
             <div className="grid md:grid-cols-3 gap-8">
               {[
                 {
+                  plan: "lead_rescue",
                   name: "Lead Rescue",
                   price: "$1,500",
                   color: "bg-blue-500",
@@ -193,18 +201,20 @@ export default function Home() {
                   ],
                 },
                 {
+                  plan: "review_autopilot",
                   name: "Review Autopilot",
                   price: "$500",
                   color: "bg-green-500",
                   features: [
                     "Automated review requests after every completed job",
-                    "AI responds to all Google & Yelp reviews",
+                    "AI drafts responses to every new Google review",
                     "Escalates negative reviews to you before responding",
                     "Monthly reputation report with rating trends",
                     "Boost your Google ranking with consistent reviews",
                   ],
                 },
                 {
+                  plan: "estimate_followup",
                   name: "Estimate Follow-Up",
                   price: "$1,000",
                   color: "bg-orange-500",
@@ -251,6 +261,12 @@ export default function Home() {
                       </li>
                     ))}
                   </ul>
+                  <a
+                    href={signupFor(service.plan)}
+                    className="mt-6 inline-block text-center border-2 border-border text-foreground px-5 py-2.5 rounded-lg font-semibold text-sm hover:border-primary hover:text-primary transition-colors"
+                  >
+                    Start with {service.name}
+                  </a>
                 </div>
               ))}
             </div>
@@ -267,7 +283,7 @@ export default function Home() {
                   here.
                 </p>
                 <a
-                  href="#contact"
+                  href={signupFor("bundle")}
                   className="inline-block mt-6 bg-primary text-white px-8 py-3 rounded-lg font-semibold hover:bg-primary-dark transition-colors"
                 >
                   Start Free Trial
@@ -282,30 +298,30 @@ export default function Home() {
           <div className="max-w-6xl mx-auto px-6">
             <div className="text-center mb-16">
               <h2 className="text-3xl md:text-4xl font-bold text-foreground">
-                Up and Running in 24 Hours
+                Live in 3 Minutes
               </h2>
             </div>
             <div className="grid md:grid-cols-4 gap-8">
               {[
                 {
                   step: "1",
-                  title: "Quick Setup Call",
-                  desc: "15-minute call to connect your phone system and calendar.",
+                  title: "Sign Up Online",
+                  desc: "Enter your business details and payment info — no sales call required.",
                 },
                 {
                   step: "2",
-                  title: "We Configure Your AI",
-                  desc: "Custom-trained on your services, pricing, and service area.",
+                  title: "Get Your Number",
+                  desc: "We instantly provision a dedicated phone line and wire up your AI.",
                 },
                 {
                   step: "3",
-                  title: "Go Live",
-                  desc: "AI starts handling leads, reviews, and follow-ups immediately.",
+                  title: "Connect Your Calendar",
+                  desc: "One-click Google Calendar link so the AI can book appointments for you.",
                 },
                 {
                   step: "4",
-                  title: "Watch Jobs Roll In",
-                  desc: "Weekly reports show exactly how many leads converted to booked jobs.",
+                  title: "Forward Your Line",
+                  desc: "Point your main number to your new line and the AI takes it from there.",
                 },
               ].map((item) => (
                 <div key={item.step} className="text-center">
@@ -368,12 +384,12 @@ export default function Home() {
                   a: "The AI is trained to handle common HVAC inquiries. For anything outside its knowledge, it takes the customer's info and immediately alerts you or your team for a personal callback.",
                 },
                 {
-                  q: "How does it connect to my existing systems?",
-                  a: "We integrate with your existing phone number (no changes needed), Google Calendar, ServiceTitan, Housecall Pro, Jobber, and most other HVAC software. Setup takes about 15 minutes.",
+                  q: "How does it connect to my phone and calendar?",
+                  a: "You get a dedicated business line we provision for you. Forward your main number to it (or publish the new one directly) and the AI handles every call that would otherwise go to voicemail. For scheduling, we integrate directly with Google Calendar — one-click connect at signup.",
                 },
                 {
                   q: "What if I want to cancel?",
-                  a: "No contracts, no commitments. Cancel anytime with 30 days notice. But our clients typically see ROI within the first week — one recovered lead pays for a month of service.",
+                  a: "No contracts, no commitments — cancel anytime from the billing portal and your service stops at the end of the current period. Our clients typically see ROI within the first week: one recovered lead pays for a month of service.",
                 },
                 {
                   q: "How is this different from an answering service?",
@@ -408,123 +424,28 @@ export default function Home() {
         </section>
 
         {/* Contact / CTA */}
-        <section id="contact" className="py-20 bg-white">
-          <div className="max-w-3xl mx-auto px-6">
-            <div className="text-center mb-12">
-              <h2 className="text-3xl md:text-4xl font-bold text-foreground">
-                Start Your Free 7-Day Trial
-              </h2>
-              <p className="text-lg text-muted mt-4">
-                No credit card required. See exactly how many leads you&apos;re
-                missing — then decide.
-              </p>
-            </div>
-            <form
-              action="https://formspree.io/f/placeholder"
-              method="POST"
-              className="bg-surface border border-border rounded-xl p-8 space-y-6"
-            >
-              <div className="grid md:grid-cols-2 gap-6">
-                <div>
-                  <label className="block text-sm font-medium text-foreground mb-2">
-                    Your Name
-                  </label>
-                  <input
-                    type="text"
-                    name="name"
-                    required
-                    className="w-full px-4 py-3 rounded-lg border border-border bg-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-                    placeholder="John Smith"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-foreground mb-2">
-                    Company Name
-                  </label>
-                  <input
-                    type="text"
-                    name="company"
-                    required
-                    className="w-full px-4 py-3 rounded-lg border border-border bg-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-                    placeholder="Smith HVAC"
-                  />
-                </div>
-              </div>
-              <div className="grid md:grid-cols-2 gap-6">
-                <div>
-                  <label className="block text-sm font-medium text-foreground mb-2">
-                    Email
-                  </label>
-                  <input
-                    type="email"
-                    name="email"
-                    required
-                    className="w-full px-4 py-3 rounded-lg border border-border bg-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-                    placeholder="john@smithhvac.com"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-foreground mb-2">
-                    Phone Number
-                  </label>
-                  <input
-                    type="tel"
-                    name="phone"
-                    required
-                    className="w-full px-4 py-3 rounded-lg border border-border bg-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-                    placeholder="(555) 123-4567"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-2">
-                  How many techs do you have?
-                </label>
-                <select
-                  name="team_size"
-                  className="w-full px-4 py-3 rounded-lg border border-border bg-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-                >
-                  <option value="1-5">1-5 techs</option>
-                  <option value="6-15">6-15 techs</option>
-                  <option value="16-30">16-30 techs</option>
-                  <option value="30+">30+ techs</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-2">
-                  Which services interest you?
-                </label>
-                <div className="grid md:grid-cols-3 gap-4">
-                  {[
-                    "Lead Rescue",
-                    "Review Autopilot",
-                    "Estimate Follow-Up",
-                  ].map((s) => (
-                    <label
-                      key={s}
-                      className="flex items-center gap-2 cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        name="services"
-                        value={s}
-                        className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
-                      />
-                      <span className="text-sm text-foreground">{s}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-              <button
-                type="submit"
-                className="w-full bg-primary text-white py-4 rounded-lg font-semibold text-lg hover:bg-primary-dark transition-colors"
+        <section id="contact" className="py-24 bg-white">
+          <div className="max-w-2xl mx-auto px-6 text-center">
+            <h2 className="text-3xl md:text-4xl font-bold text-foreground mb-4">
+              Start Your Free 7-Day Trial
+            </h2>
+            <p className="text-lg text-muted mb-10">
+              Takes 3 minutes. Your AI system goes live immediately — dedicated phone number, lead rescue, estimate follow-up, and review autopilot all active from day one.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-4 justify-center items-center mb-8">
+              <a
+                href={SIGNUP_URL}
+                className="bg-primary text-white px-8 py-4 rounded-lg font-semibold text-lg hover:bg-primary-dark transition-colors w-full sm:w-auto text-center"
               >
-                Start My Free Trial
-              </button>
-              <p className="text-sm text-muted text-center">
-                We&apos;ll reach out within 2 hours to get you set up.
-              </p>
-            </form>
+                Start My Free Trial →
+              </a>
+            </div>
+            <div className="flex flex-wrap justify-center gap-6 text-sm text-muted">
+              <span>✓ 7-day free trial</span>
+              <span>✓ No setup fees</span>
+              <span>✓ Cancel anytime</span>
+              <span>✓ Live in 3 minutes</span>
+            </div>
           </div>
         </section>
       </main>

@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feat/ci-cd-setup, feat/hvac-automation-agency]
+  pull_request:
+    branches: [main, feat/hvac-automation-agency]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets-scan:
+    name: secrets scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetch full history so gitleaks can scan every commit, not just HEAD.
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          curl -sSfL \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+            | tar xz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+
+      - name: Scan git history for secrets
+        run: gitleaks detect --source . --redact --exit-code 1
+
+  automations:
+    name: automations — test & docker build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hvac-agency/automations
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            changed:
+              - 'hvac-agency/automations/**'
+              - '.github/workflows/ci.yml'
+
+      - uses: actions/setup-node@v4
+        if: steps.changes.outputs.changed == 'true'
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: hvac-agency/automations/package-lock.json
+
+      - name: Install dependencies
+        if: steps.changes.outputs.changed == 'true'
+        run: npm ci
+
+      - name: Run smoke tests
+        if: steps.changes.outputs.changed == 'true'
+        run: npm test
+
+      - name: Set up Docker Buildx
+        if: steps.changes.outputs.changed == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        if: steps.changes.outputs.changed == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: hvac-agency/automations
+          push: false
+          load: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  landing-page:
+    name: landing-page — lint & build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hvac-agency/landing-page
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            changed:
+              - 'hvac-agency/landing-page/**'
+              - '.github/workflows/ci.yml'
+
+      - uses: actions/setup-node@v4
+        if: steps.changes.outputs.changed == 'true'
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: hvac-agency/landing-page/package-lock.json
+
+      - name: Install dependencies
+        if: steps.changes.outputs.changed == 'true'
+        run: npm ci
+
+      - name: Lint
+        if: steps.changes.outputs.changed == 'true'
+        run: npm run lint
+
+      - name: Build
+        if: steps.changes.outputs.changed == 'true'
+        run: npm run build

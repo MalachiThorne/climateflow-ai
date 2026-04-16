@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClimateFlow AI — Pitch Deck</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --blue: #0066FF;
+    --blue-dark: #0044CC;
+    --ice: #E8F4FD;
+    --dark: #0A1628;
+    --gray: #64748B;
+    --white: #FFFFFF;
+    --gradient: linear-gradient(135deg, #0066FF 0%, #00CCFF 100%);
+    --gradient-dark: linear-gradient(135deg, #0A1628 0%, #1A2744 100%);
+  }
+
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: #0A1628;
+    color: var(--white);
+    scroll-behavior: smooth;
+    overflow-x: hidden;
+  }
+
+  .slide {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 40px;
+    position: relative;
+  }
+
+  .slide-inner {
+    max-width: 1000px;
+    width: 100%;
+  }
+
+  /* Slide 1 — Title */
+  .slide-title {
+    background: var(--gradient-dark);
+    text-align: center;
+  }
+
+  .slide-title .logo {
+    font-size: 1rem;
+    letter-spacing: 6px;
+    text-transform: uppercase;
+    color: #00CCFF;
+    margin-bottom: 24px;
+    font-weight: 600;
+  }
+
+  .slide-title h1 {
+    font-size: clamp(3rem, 8vw, 6rem);
+    font-weight: 900;
+    background: var(--gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    line-height: 1.1;
+    margin-bottom: 24px;
+  }
+
+  .slide-title .tagline {
+    font-size: clamp(1.1rem, 2.5vw, 1.5rem);
+    color: var(--gray);
+    font-weight: 300;
+    max-width: 600px;
+    margin: 0 auto;
+  }
+
+  /* Alternating backgrounds */
+  .slide:nth-child(even) { background: #0F1D32; }
+  .slide:nth-child(odd) { background: var(--dark); }
+
+  /* Section label */
+  .section-label {
+    font-size: 0.75rem;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    color: #00CCFF;
+    margin-bottom: 16px;
+    font-weight: 600;
+  }
+
+  /* Headings */
+  .slide h2 {
+    font-size: clamp(2rem, 5vw, 3.2rem);
+    font-weight: 800;
+    margin-bottom: 40px;
+    line-height: 1.2;
+  }
+
+  .slide h2 .highlight {
+    background: var(--gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Problem cards */
+  .problem-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 24px;
+  }
+
+  .problem-card {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 16px;
+    padding: 32px;
+    transition: transform 0.3s, border-color 0.3s;
+  }
+
+  .problem-card:hover {
+    transform: translateY(-4px);
+    border-color: rgba(0,102,255,0.3);
+  }
+
+  .problem-card .icon {
+    font-size: 2rem;
+    margin-bottom: 16px;
+  }
+
+  .problem-card h3 {
+    font-size: 1.15rem;
+    font-weight: 700;
+    margin-bottom: 10px;
+  }
+
+  .problem-card p {
+    color: var(--gray);
+    font-size: 0.95rem;
+    line-height: 1.6;
+  }
+
+  /* Solution section */
+  .solution-text {
+    font-size: clamp(1.15rem, 2vw, 1.4rem);
+    color: rgba(255,255,255,0.8);
+    line-height: 1.8;
+    max-width: 700px;
+  }
+
+  /* How it works — steps */
+  .steps {
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+  }
+
+  .step {
+    display: flex;
+    align-items: flex-start;
+    gap: 24px;
+    background: rgba(255,255,255,0.03);
+    border-radius: 16px;
+    padding: 28px 32px;
+    border-left: 3px solid;
+    border-image: var(--gradient) 1;
+    transition: background 0.3s;
+  }
+
+  .step:hover { background: rgba(255,255,255,0.06); }
+
+  .step-number {
+    font-size: 2rem;
+    font-weight: 900;
+    background: var(--gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    flex-shrink: 0;
+    width: 48px;
+  }
+
+  .step h3 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+
+  .step p {
+    color: var(--gray);
+    font-size: 0.95rem;
+    line-height: 1.5;
+  }
+
+  /* Pricing table */
+  .pricing-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 24px;
+    margin-bottom: 32px;
+  }
+
+  .pricing-card {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 16px;
+    padding: 36px 28px;
+    text-align: center;
+    transition: transform 0.3s, border-color 0.3s;
+  }
+
+  .pricing-card:hover {
+    transform: translateY(-4px);
+    border-color: rgba(0,102,255,0.3);
+  }
+
+  .pricing-card.featured {
+    border-color: #00CCFF;
+    background: rgba(0,102,255,0.08);
+    position: relative;
+  }
+
+  .pricing-card.featured::before {
+    content: 'BEST VALUE';
+    position: absolute;
+    top: -12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--gradient);
+    color: white;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 2px;
+    padding: 4px 16px;
+    border-radius: 20px;
+  }
+
+  .pricing-card h3 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+
+  .pricing-card .price {
+    font-size: 2.2rem;
+    font-weight: 900;
+    background: var(--gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 4px;
+  }
+
+  .pricing-card .period {
+    color: var(--gray);
+    font-size: 0.85rem;
+    margin-bottom: 20px;
+  }
+
+  .pricing-card .desc {
+    color: rgba(255,255,255,0.7);
+    font-size: 0.9rem;
+    line-height: 1.6;
+  }
+
+  /* ROI callout */
+  .roi-box {
+    background: rgba(0,204,255,0.06);
+    border: 1px solid rgba(0,204,255,0.2);
+    border-radius: 16px;
+    padding: 40px;
+    text-align: center;
+  }
+
+  .roi-box .big-number {
+    font-size: clamp(3rem, 8vw, 5rem);
+    font-weight: 900;
+    background: var(--gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    line-height: 1;
+    margin-bottom: 12px;
+  }
+
+  .roi-box p {
+    font-size: 1.15rem;
+    color: rgba(255,255,255,0.7);
+    max-width: 500px;
+    margin: 0 auto;
+    line-height: 1.6;
+  }
+
+  /* Stats row */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 24px;
+    margin-bottom: 40px;
+  }
+
+  .stat {
+    text-align: center;
+    padding: 28px;
+    background: rgba(255,255,255,0.03);
+    border-radius: 16px;
+  }
+
+  .stat .number {
+    font-size: 2.4rem;
+    font-weight: 900;
+    background: var(--gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 6px;
+  }
+
+  .stat .label {
+    color: var(--gray);
+    font-size: 0.9rem;
+  }
+
+  /* Tech pills */
+  .tech-stack-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    justify-content: center;
+  }
+
+  .tech-pill {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 50px;
+    padding: 14px 28px;
+    font-size: 0.95rem;
+    font-weight: 500;
+    transition: border-color 0.3s;
+  }
+
+  .tech-pill:hover { border-color: rgba(0,204,255,0.4); }
+
+  /* Traction timeline */
+  .timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    position: relative;
+    padding-left: 32px;
+  }
+
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 7px;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    background: linear-gradient(to bottom, #0066FF, #00CCFF);
+  }
+
+  .timeline-item {
+    position: relative;
+    padding: 16px 0 16px 24px;
+  }
+
+  .timeline-item::before {
+    content: '';
+    position: absolute;
+    left: -28px;
+    top: 22px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--gradient);
+    border: 3px solid var(--dark);
+  }
+
+  .timeline-item .date {
+    font-size: 0.8rem;
+    color: #00CCFF;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+
+  .timeline-item h3 {
+    font-size: 1.05rem;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+
+  .timeline-item p {
+    color: var(--gray);
+    font-size: 0.9rem;
+  }
+
+  /* CTA slide */
+  .slide-cta {
+    text-align: center;
+  }
+
+  .slide-cta h2 {
+    margin-bottom: 20px;
+  }
+
+  .slide-cta .sub {
+    font-size: 1.2rem;
+    color: var(--gray);
+    margin-bottom: 40px;
+    max-width: 500px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .cta-button {
+    display: inline-block;
+    background: var(--gradient);
+    color: white;
+    font-size: 1.1rem;
+    font-weight: 700;
+    padding: 18px 48px;
+    border-radius: 50px;
+    text-decoration: none;
+    transition: transform 0.3s, box-shadow 0.3s;
+  }
+
+  .cta-button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 32px rgba(0,102,255,0.4);
+  }
+
+  /* Nav dots */
+  .nav-dots {
+    position: fixed;
+    right: 24px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    z-index: 100;
+  }
+
+  .nav-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.2);
+    cursor: pointer;
+    transition: background 0.3s, transform 0.3s;
+  }
+
+  .nav-dot:hover, .nav-dot.active {
+    background: #00CCFF;
+    transform: scale(1.3);
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .slide { padding: 40px 24px; }
+    .step { flex-direction: column; gap: 12px; }
+    .nav-dots { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Nav Dots -->
+<nav class="nav-dots" id="navDots"></nav>
+
+<!-- Slide 1: Title -->
+<section class="slide slide-title" data-label="ClimateFlow AI">
+  <div class="slide-inner">
+    <div class="logo">ClimateFlow</div>
+    <h1>ClimateFlow AI</h1>
+    <p class="tagline">AI-powered operations for HVAC companies. Never miss a lead again.</p>
+  </div>
+</section>
+
+<!-- Slide 2: Problem -->
+<section class="slide" data-label="The Problem">
+  <div class="slide-inner">
+    <div class="section-label">The Problem</div>
+    <h2>HVAC companies are <span class="highlight">bleeding revenue</span></h2>
+    <div class="problem-grid">
+      <div class="problem-card">
+        <div class="icon">&#128222;</div>
+        <h3>Missed Calls</h3>
+        <p>40-60% of inbound calls go unanswered while techs are on jobs. Every missed call is a customer lost to the competition.</p>
+      </div>
+      <div class="problem-card">
+        <div class="icon">&#128176;</div>
+        <h3>Lost Estimates</h3>
+        <p>Estimates go stale without follow-up. Homeowners move on to the company that texts back first.</p>
+      </div>
+      <div class="problem-card">
+        <div class="icon">&#11088;</div>
+        <h3>Review Neglect</h3>
+        <p>Happy customers don't leave reviews on their own. Bad reviews sit unanswered, tanking your online reputation.</p>
+      </div>
+      <div class="problem-card">
+        <div class="icon">&#128181;</div>
+        <h3>Hiring Is Expensive</h3>
+        <p>A dedicated office person costs $3,500-$5,000/month and still can't work nights, weekends, or holidays.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Slide 3: Solution -->
+<section class="slide" data-label="The Solution">
+  <div class="slide-inner">
+    <div class="section-label">The Solution</div>
+    <h2>Your AI-powered <span class="highlight">operations team</span></h2>
+    <p class="solution-text">
+      ClimateFlow AI acts as an always-on operations layer for your HVAC business. It answers missed calls in under 60 seconds, follows up on every open estimate, and manages your online reputation automatically.
+      <br><br>
+      No new hires. No extra overhead. No leads slipping through the cracks.
+    </p>
+  </div>
+</section>
+
+<!-- Slide 4: How It Works -->
+<section class="slide" data-label="How It Works">
+  <div class="slide-inner">
+    <div class="section-label">How It Works</div>
+    <h2>Four steps. <span class="highlight">Fully automated.</span></h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-number">01</div>
+        <div>
+          <h3>Missed Call Detected</h3>
+          <p>AI responds via text in under 60 seconds &mdash; before the customer calls your competitor.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-number">02</div>
+        <div>
+          <h3>Lead Qualified</h3>
+          <p>AI asks the right questions, understands the job, and books the appointment directly on your calendar.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-number">03</div>
+        <div>
+          <h3>Estimate Followed Up</h3>
+          <p>Open quotes get automated text and email follow-ups until they close or decline. No more ghosted estimates.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-number">04</div>
+        <div>
+          <h3>Reviews Managed</h3>
+          <p>AI requests reviews from happy customers and responds to every review &mdash; good or bad &mdash; in your brand voice.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Slide 5: Pricing -->
+<section class="slide" data-label="Pricing">
+  <div class="slide-inner">
+    <div class="section-label">Pricing</div>
+    <h2>Simple, <span class="highlight">transparent</span> pricing</h2>
+    <div class="pricing-grid">
+      <div class="pricing-card">
+        <h3>Lead Rescue</h3>
+        <div class="price">$1,500</div>
+        <div class="period">per month</div>
+        <p class="desc">AI missed-call response, lead qualification, and appointment booking</p>
+      </div>
+      <div class="pricing-card">
+        <h3>Review Autopilot</h3>
+        <div class="price">$500</div>
+        <div class="period">per month</div>
+        <p class="desc">Automated review requests and AI-generated review responses</p>
+      </div>
+      <div class="pricing-card">
+        <h3>Estimate Follow-Up</h3>
+        <div class="price">$1,000</div>
+        <div class="period">per month</div>
+        <p class="desc">AI chases open estimates via text and email until they convert</p>
+      </div>
+      <div class="pricing-card featured">
+        <h3>Full Bundle</h3>
+        <div class="price">$2,500</div>
+        <div class="period">per month</div>
+        <p class="desc">All three services. Everything automated. Maximum revenue captured.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Slide 6: ROI -->
+<section class="slide" data-label="ROI">
+  <div class="slide-inner">
+    <div class="section-label">Return on Investment</div>
+    <h2>Pays for itself on <span class="highlight">day one</span></h2>
+    <div class="roi-box">
+      <div class="big-number">2-3</div>
+      <p>recovered leads per month covers the entire cost. The average HVAC job is worth $800&ndash;$3,000. Everything beyond that is pure profit.</p>
+    </div>
+    <br>
+    <div style="text-align:center; color: var(--gray); font-size: 0.95rem;">
+      No contracts. Cancel anytime. Results speak for themselves.
+    </div>
+  </div>
+</section>
+
+<!-- Slide 7: Market -->
+<section class="slide" data-label="Market">
+  <div class="slide-inner">
+    <div class="section-label">Market Opportunity</div>
+    <h2>A <span class="highlight">massive</span> greenfield market</h2>
+    <div class="stats-row">
+      <div class="stat">
+        <div class="number">120K+</div>
+        <div class="label">HVAC companies in the US</div>
+      </div>
+      <div class="stat">
+        <div class="number">$300B+</div>
+        <div class="label">Industry size, growing 6%/yr</div>
+      </div>
+      <div class="stat">
+        <div class="number">&lt;5%</div>
+        <div class="label">AI adoption in trades</div>
+      </div>
+      <div class="stat">
+        <div class="number">1-20</div>
+        <div class="label">Employees at most shops</div>
+      </div>
+    </div>
+    <p style="text-align:center; color: var(--gray); font-size: 1rem; max-width: 600px; margin: 0 auto;">
+      Most HVAC companies are small teams with no dedicated office staff. They need automation but don't know where to start. That's where we come in.
+    </p>
+  </div>
+</section>
+
+<!-- Slide 8: Tech Stack -->
+<section class="slide" data-label="Technology">
+  <div class="slide-inner">
+    <div class="section-label">Technology</div>
+    <h2>Built to <span class="highlight">scale</span></h2>
+    <div class="tech-stack-grid">
+      <div class="tech-pill">Twilio &mdash; Voice &amp; SMS</div>
+      <div class="tech-pill">Claude API &mdash; AI Intelligence</div>
+      <div class="tech-pill">Next.js &mdash; Client Dashboard</div>
+      <div class="tech-pill">Node.js &mdash; Automation Engine</div>
+    </div>
+    <br><br>
+    <p style="text-align:center; color: var(--gray); font-size: 1rem; max-width: 550px; margin: 0 auto;">
+      Fully automated infrastructure. Adding a new client takes minutes, not weeks. Scales without linear headcount growth.
+    </p>
+  </div>
+</section>
+
+<!-- Slide 9: Traction -->
+<section class="slide" data-label="Traction">
+  <div class="slide-inner">
+    <div class="section-label">Traction &amp; Roadmap</div>
+    <h2>Moving <span class="highlight">fast</span></h2>
+    <div class="timeline">
+      <div class="timeline-item">
+        <div class="date">April 2026</div>
+        <h3>Landing Page Live</h3>
+        <p>Brand, positioning, and web presence established</p>
+      </div>
+      <div class="timeline-item">
+        <div class="date">April 2026</div>
+        <h3>Automation Pipelines</h3>
+        <p>Lead Rescue, Review Autopilot, and Estimate Follow-Up in development</p>
+      </div>
+      <div class="timeline-item">
+        <div class="date">May 2026</div>
+        <h3>First Clients Onboarded</h3>
+        <p>Target: 2 HVAC companies on the full bundle</p>
+      </div>
+      <div class="timeline-item">
+        <div class="date">June 2026</div>
+        <h3>$10K MRR</h3>
+        <p>4 clients at $2,500/month. Expand to plumbing and electrical.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Slide 10: CTA -->
+<section class="slide slide-cta" data-label="Get Started">
+  <div class="slide-inner">
+    <div class="section-label">Let's Go</div>
+    <h2>Stop losing leads.<br><span class="highlight">Start growing.</span></h2>
+    <p class="sub">Setup by end of week. Results within 30 days. No contracts.</p>
+    <a href="#" class="cta-button">Get ClimateFlow AI</a>
+  </div>
+</section>
+
+<script>
+  // Build nav dots
+  const slides = document.querySelectorAll('.slide');
+  const navDots = document.getElementById('navDots');
+  slides.forEach((slide, i) => {
+    const dot = document.createElement('div');
+    dot.className = 'nav-dot' + (i === 0 ? ' active' : '');
+    dot.title = slide.dataset.label || '';
+    dot.addEventListener('click', () => {
+      slide.scrollIntoView({ behavior: 'smooth' });
+    });
+    navDots.appendChild(dot);
+  });
+
+  // Update active dot on scroll
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const index = Array.from(slides).indexOf(entry.target);
+        document.querySelectorAll('.nav-dot').forEach((d, i) => {
+          d.classList.toggle('active', i === index);
+        });
+      }
+    });
+  }, { threshold: 0.5 });
+
+  slides.forEach(slide => observer.observe(slide));
+</script>
+
+</body>
+</html>

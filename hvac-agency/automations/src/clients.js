@@ -2,24 +2,24 @@ const store = require("./store");
 
 const CLIENTS = "clients";
 
-function getClient(businessId) {
-  return store.findRecord(CLIENTS, (c) => c.id === businessId);
+async function getClient(businessId) {
+  return store.findRecordByField(CLIENTS, "id", businessId);
 }
 
-function getClientByPhone(twilioNumber) {
-  return store.findRecord(CLIENTS, (c) => c.twilioNumber === twilioNumber);
+async function getClientByPhone(twilioNumber) {
+  return store.findRecordByField(CLIENTS, "twilioNumber", twilioNumber);
 }
 
-function addClient(client) {
+async function addClient(client) {
   return store.addRecord(CLIENTS, client);
 }
 
-function listClients() {
+async function listClients() {
   return store.readCollection(CLIENTS);
 }
 
-function createSampleClient() {
-  const existing = store.findRecord(CLIENTS, (c) => c.id === "demo");
+async function createSampleClient() {
+  const existing = await store.findRecordByField(CLIENTS, "id", "demo");
   if (existing) return existing;
 
   return store.addRecord(CLIENTS, {
@@ -35,9 +35,19 @@ function createSampleClient() {
       "Maintenance plans",
     ],
     hours: "Mon-Fri 8am-6pm, Emergency service 24/7",
-    twilioNumber: "+15551234567",
+    twilioNumber: "+19712659340",
     googleReviewLink: "https://g.page/r/portland-comfort-hvac/review",
     financingAvailable: true,
+    legacyAllFeatures: true,
+    pricing: [
+      "Diagnostic / service call: $99 (waived if you book the repair)",
+      "AC repair: typically $200-$800 depending on parts",
+      "Furnace repair: typically $250-$900",
+      "Full AC install: $5,500-$9,500",
+      "Full furnace install: $4,500-$8,500",
+      "Heat pump install: $9,000-$16,000",
+      "Annual maintenance plan: $189/year (both systems)",
+    ].join("\n"),
   });
 }
 
