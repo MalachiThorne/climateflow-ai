@@ -11,7 +11,7 @@ async function requestReview(customerPhone, customerName, jobType, business) {
     `We'd really appreciate it if you could leave us a quick review — it helps other homeowners find reliable HVAC service. ` +
     `Here's the link: ${business.googleReviewLink}\n\nThank you! — ${business.ownerName}`;
 
-  await sendSMS(customerPhone, message);
+  await sendSMS(customerPhone, message, business.twilioNumber);
 
   await store.addRecord(REVIEW_REQUESTS, {
     phone: customerPhone,
@@ -27,6 +27,10 @@ async function requestReview(customerPhone, customerName, jobType, business) {
 async function respondToReview(review, business) {
   const systemPrompt = buildReviewResponsePrompt(business);
 
+  // Review text is attacker-controlled. Pass source: "review" so chat() fences
+  // the entire user turn and warns the model not to treat contents as instructions.
+  // The rest of the string is server-built metadata, which the fence wraps along
+  // with the text — acceptable since the warning still applies to the whole block.
   const userMessage =
     `Review from ${review.authorName} (${review.rating} stars):\n"${review.text}"\n\n` +
     `Write a response from the business owner.`;
@@ -39,7 +43,7 @@ async function respondToReview(review, business) {
       suggestedResponse: null,
     });
 
-    const suggestedResponse = await chat(systemPrompt, userMessage);
+    const suggestedResponse = await chat(systemPrompt, userMessage, [], { source: "review" });
 
     await store.updateRecord(REVIEWS, stored.id, { suggestedResponse });
 
@@ -47,7 +51,7 @@ async function respondToReview(review, business) {
     return { action: "flagged", suggestedResponse };
   }
 
-  const response = await chat(systemPrompt, userMessage);
+  const response = await chat(systemPrompt, userMessage, [], { source: "review" });
 
   await store.addRecord(REVIEWS, {
     ...review,
@@ -61,10 +65,10 @@ async function respondToReview(review, business) {
 }
 
 async function sendFollowUpReviewRequest(customerPhone, customerName, business) {
-  const existing = await store.findRecord(
-    REVIEW_REQUESTS,
-    (r) => r.phone === customerPhone && r.businessId === business.id
-  );
+  const existing = await store.findRecordByFields(REVIEW_REQUESTS, {
+    phone: customerPhone,
+    businessId: business.id,
+  });
 
   if (!existing || existing.status !== "sent") return;
 
@@ -73,7 +77,7 @@ async function sendFollowUpReviewRequest(customerPhone, customerName, business) 
     `If you have 30 seconds, we'd love to hear how your service went: ${business.googleReviewLink}\n` +
     `No worries if not — thanks again for choosing us!`;
 
-  await sendSMS(customerPhone, message);
+  await sendSMS(customerPhone, message, business.twilioNumber);
   await store.updateRecord(REVIEW_REQUESTS, existing.id, { status: "follow_up_sent" });
 
   console.log(`[Review Autopilot] Follow-up review request sent to ${customerName}`);

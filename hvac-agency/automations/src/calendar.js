@@ -1,8 +1,12 @@
+const { randomBytes } = require("crypto");
 const { google } = require("googleapis");
 const config = require("./config");
 const store = require("./store");
+const { encryptTokens, decryptTokens } = require("./tokenCrypto");
 
 const TOKENS = "calendar_tokens";
+const OAUTH_STATES = "calendar_oauth_states";
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 function createOAuth2Client() {
   return new google.auth.OAuth2(
@@ -12,55 +16,98 @@ function createOAuth2Client() {
   );
 }
 
-function getAuthUrl(businessId) {
+// Generates a random state nonce and persists the businessId binding.
+// The state is what Google echoes back; consumeOAuthState() validates + deletes it
+// so the same nonce can't be replayed and an attacker can't substitute a different
+// businessId via the state parameter.
+async function getAuthUrl(businessId) {
+  const state = randomBytes(32).toString("hex");
+  await store.addRecord(OAUTH_STATES, {
+    id: state,
+    businessId,
+    expiresAt: Date.now() + OAUTH_STATE_TTL_MS,
+  });
+
   const oauth2Client = createOAuth2Client();
   return oauth2Client.generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
     scope: ["https://www.googleapis.com/auth/calendar"],
-    state: businessId,
+    state,
   });
+}
+
+// Atomic consume: DELETE RETURNING guarantees only one caller wins the race,
+// even with concurrent OAuth callbacks. Stale / missing / expired states all
+// return null.
+async function consumeOAuthState(state) {
+  if (typeof state !== "string" || state.length !== 64) return null;
+  const record = await store.deleteRecord(OAUTH_STATES, state);
+  if (!record || !record.businessId) return null;
+  if (record.expiresAt && record.expiresAt < Date.now()) return null;
+  return record.businessId;
 }
 
 async function handleOAuthCallback(code, businessId) {
   const oauth2Client = createOAuth2Client();
   const { tokens } = await oauth2Client.getToken(code);
+  const encrypted = encryptTokens(tokens);
 
-  const existing = await store.findRecord(TOKENS, (t) => t.businessId === businessId);
+  const existing = await store.findRecordByField(TOKENS, "businessId", businessId);
   if (existing) {
-    await store.updateRecord(TOKENS, existing.id, { tokens });
+    await store.updateRecord(TOKENS, existing.id, { tokens: encrypted });
   } else {
-    await store.addRecord(TOKENS, { businessId, tokens });
+    await store.addRecord(TOKENS, { businessId, tokens: encrypted });
   }
 
   return tokens;
 }
 
 async function getAuthenticatedClient(businessId) {
-  const record = await store.findRecord(TOKENS, (t) => t.businessId === businessId);
+  const record = await store.findRecordByField(TOKENS, "businessId", businessId);
   if (!record) return null;
 
+  const plainTokens = decryptTokens(record.tokens);
   const oauth2Client = createOAuth2Client();
-  oauth2Client.setCredentials(record.tokens);
+  oauth2Client.setCredentials(plainTokens);
 
   oauth2Client.on("tokens", async (newTokens) => {
-    const updated = { ...record.tokens, ...newTokens };
-    await store.updateRecord(TOKENS, record.id, { tokens: updated });
+    const merged = encryptTokens({ ...plainTokens, ...newTokens });
+    await store.updateRecord(TOKENS, record.id, { tokens: merged });
   });
 
   return oauth2Client;
+}
+
+// Returns a UTC Date for a given local clock time in the business's timezone
+function localToUTC(dateStr, hour, timezone) {
+  // Build a candidate UTC instant, then measure the TZ offset at that moment
+  const candidate = new Date(`${dateStr}T${String(hour).padStart(2, "0")}:00:00Z`);
+  const localStr = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(candidate);
+  // "sv-SE" locale formats as "YYYY-MM-DD HH:MM:SS" — treat as UTC to get the offset
+  const diff = candidate - new Date(localStr.replace(" ", "T") + "Z");
+  return new Date(candidate.getTime() + diff);
 }
 
 async function getAvailableSlots(businessId, dateStr) {
   const auth = await getAuthenticatedClient(businessId);
   if (!auth) return { error: "Calendar not connected" };
 
+  const business = await store.findRecordByField("clients", "id", businessId);
+  const timezone = business?.timezone || "America/Los_Angeles";
+
   const calendar = google.calendar({ version: "v3", auth });
-  const date = new Date(dateStr);
-  const startOfDay = new Date(date);
-  startOfDay.setHours(8, 0, 0, 0);
-  const endOfDay = new Date(date);
-  endOfDay.setHours(18, 0, 0, 0);
+  const startOfDay = localToUTC(dateStr, 8, timezone);
+  const endOfDay = localToUTC(dateStr, 18, timezone);
 
   const { data } = await calendar.freebusy.query({
     requestBody: {
@@ -74,10 +121,8 @@ async function getAvailableSlots(businessId, dateStr) {
 
   const slots = [];
   for (let hour = 8; hour < 18; hour++) {
-    const slotStart = new Date(date);
-    slotStart.setHours(hour, 0, 0, 0);
-    const slotEnd = new Date(date);
-    slotEnd.setHours(hour + 1, 0, 0, 0);
+    const slotStart = localToUTC(dateStr, hour, timezone);
+    const slotEnd = localToUTC(dateStr, hour + 1, timezone);
 
     const isBusy = busySlots.some((busy) => {
       const busyStart = new Date(busy.start);
@@ -89,7 +134,7 @@ async function getAvailableSlots(businessId, dateStr) {
       slots.push({
         start: slotStart.toISOString(),
         end: slotEnd.toISOString(),
-        label: `${hour > 12 ? hour - 12 : hour}:00 ${hour >= 12 ? "PM" : "AM"}`,
+        label: `${hour >= 13 ? hour - 12 : hour}:00 ${hour >= 12 ? "PM" : "AM"}`,
       });
     }
   }
@@ -101,13 +146,15 @@ async function bookAppointment(businessId, { customerName, customerPhone, date, 
   const auth = await getAuthenticatedClient(businessId);
   if (!auth) return { error: "Calendar not connected" };
 
+  const business = await store.findRecordByField("clients", "id", businessId);
+  const timezone = business?.timezone || "America/Los_Angeles";
+
   const calendar = google.calendar({ version: "v3", auth });
 
   const [hours, minutes] = time.split(":").map(Number);
-  const startTime = new Date(date);
-  startTime.setHours(hours, minutes || 0, 0, 0);
-  const endTime = new Date(startTime);
-  endTime.setHours(endTime.getHours() + 1);
+  const startTime = localToUTC(date, hours, timezone);
+  if (minutes) startTime.setMinutes(startTime.getMinutes() + minutes);
+  const endTime = new Date(startTime.getTime() + 60 * 60 * 1000);
 
   const event = await calendar.events.insert({
     calendarId: "primary",
@@ -122,8 +169,8 @@ async function bookAppointment(businessId, { customerName, customerPhone, date, 
         "Booked automatically by ClimateFlow AI",
       ].join("\n"),
       location: address || "",
-      start: { dateTime: startTime.toISOString() },
-      end: { dateTime: endTime.toISOString() },
+      start: { dateTime: startTime.toISOString(), timeZone: timezone },
+      end: { dateTime: endTime.toISOString(), timeZone: timezone },
       reminders: {
         useDefault: false,
         overrides: [
@@ -155,11 +202,12 @@ async function bookAppointment(businessId, { customerName, customerPhone, date, 
 }
 
 async function isCalendarConnected(businessId) {
-  return !!(await store.findRecord(TOKENS, (t) => t.businessId === businessId));
+  return !!(await store.findRecordByField(TOKENS, "businessId", businessId));
 }
 
 module.exports = {
   getAuthUrl,
+  consumeOAuthState,
   handleOAuthCallback,
   getAvailableSlots,
   bookAppointment,

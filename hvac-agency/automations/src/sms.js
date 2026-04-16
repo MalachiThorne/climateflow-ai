@@ -3,6 +3,28 @@ const config = require("./config");
 
 const twilioClient = twilio(config.twilio.accountSid, config.twilio.authToken);
 
+// Defense against injected output: strip URLs and phone numbers from AI-generated SMS
+// before we send it. Prevents a prompt-injected model from smuggling phishing links or
+// alternate callback numbers into a message on our Twilio line. `allowedPhone` is the
+// business's own published number, which is allowed through.
+function scrubAIReply(text, allowedPhone = "") {
+  if (!text) return "";
+  const allowedDigits = String(allowedPhone).replace(/\D/g, "");
+  const out = String(text)
+    // Drop http(s)/www URLs outright
+    .replace(/\bhttps?:\/\/\S+/gi, "")
+    .replace(/\bwww\.\S+/gi, "")
+    // Drop phone-ish patterns unless they match the business's own number
+    .replace(/\+?\d[\d\s\-().]{8,}\d/g, (match) => {
+      const digits = match.replace(/\D/g, "");
+      if (!allowedDigits) return "";
+      return digits.endsWith(allowedDigits.slice(-10)) ? match : "";
+    })
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+  return out;
+}
+
 async function sendSMS(to, body, fromNumber) {
   const message = await twilioClient.messages.create({
     body,
