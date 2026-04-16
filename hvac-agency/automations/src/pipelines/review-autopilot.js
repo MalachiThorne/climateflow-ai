@@ -13,7 +13,7 @@ async function requestReview(customerPhone, customerName, jobType, business) {
 
   await sendSMS(customerPhone, message);
 
-  store.addRecord(REVIEW_REQUESTS, {
+  await store.addRecord(REVIEW_REQUESTS, {
     phone: customerPhone,
     customerName,
     jobType,
@@ -32,7 +32,7 @@ async function respondToReview(review, business) {
     `Write a response from the business owner.`;
 
   if (review.rating <= 3) {
-    const stored = store.addRecord(REVIEWS, {
+    const stored = await store.addRecord(REVIEWS, {
       ...review,
       businessId: business.id,
       status: "pending_owner_approval",
@@ -41,7 +41,7 @@ async function respondToReview(review, business) {
 
     const suggestedResponse = await chat(systemPrompt, userMessage);
 
-    store.updateRecord(REVIEWS, stored.id, { suggestedResponse });
+    await store.updateRecord(REVIEWS, stored.id, { suggestedResponse });
 
     console.log(`[Review Autopilot] Negative review from ${review.authorName} — flagged for owner approval`);
     return { action: "flagged", suggestedResponse };
@@ -49,7 +49,7 @@ async function respondToReview(review, business) {
 
   const response = await chat(systemPrompt, userMessage);
 
-  store.addRecord(REVIEWS, {
+  await store.addRecord(REVIEWS, {
     ...review,
     businessId: business.id,
     status: "responded",
@@ -61,7 +61,7 @@ async function respondToReview(review, business) {
 }
 
 async function sendFollowUpReviewRequest(customerPhone, customerName, business) {
-  const existing = store.findRecord(
+  const existing = await store.findRecord(
     REVIEW_REQUESTS,
     (r) => r.phone === customerPhone && r.businessId === business.id
   );
@@ -74,7 +74,7 @@ async function sendFollowUpReviewRequest(customerPhone, customerName, business) 
     `No worries if not — thanks again for choosing us!`;
 
   await sendSMS(customerPhone, message);
-  store.updateRecord(REVIEW_REQUESTS, existing.id, { status: "follow_up_sent" });
+  await store.updateRecord(REVIEW_REQUESTS, existing.id, { status: "follow_up_sent" });
 
   console.log(`[Review Autopilot] Follow-up review request sent to ${customerName}`);
 }

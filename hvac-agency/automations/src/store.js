@@ -1,49 +1,67 @@
-const fs = require("fs");
-const path = require("path");
+const { Pool } = require("pg");
 
-const DATA_DIR = path.resolve(__dirname, "../data");
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL?.includes("railway") ? { rejectUnauthorized: false } : false,
+});
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+async function init() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS records (
+      id TEXT PRIMARY KEY,
+      collection TEXT NOT NULL,
+      data JSONB NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_records_collection ON records(collection);
+  `);
 }
 
-function getFilePath(collection) {
-  return path.join(DATA_DIR, `${collection}.json`);
+function generateId() {
+  return Date.now().toString() + Math.random().toString(36).slice(2, 6);
 }
 
-function readCollection(collection) {
-  const filePath = getFilePath(collection);
-  if (!fs.existsSync(filePath)) return [];
-  return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+async function readCollection(collection) {
+  const { rows } = await pool.query(
+    "SELECT data FROM records WHERE collection = $1 ORDER BY created_at",
+    [collection]
+  );
+  return rows.map((r) => r.data);
 }
 
-function writeCollection(collection, data) {
-  fs.writeFileSync(getFilePath(collection), JSON.stringify(data, null, 2));
-}
-
-function addRecord(collection, record) {
-  const data = readCollection(collection);
-  const entry = { id: Date.now().toString(), createdAt: new Date().toISOString(), ...record };
-  data.push(entry);
-  writeCollection(collection, data);
+async function addRecord(collection, record) {
+  const id = record.id || generateId();
+  const entry = { id, createdAt: new Date().toISOString(), ...record };
+  await pool.query(
+    "INSERT INTO records (id, collection, data) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET data = $3, updated_at = NOW()",
+    [id, collection, JSON.stringify(entry)]
+  );
   return entry;
 }
 
-function updateRecord(collection, id, updates) {
-  const data = readCollection(collection);
-  const idx = data.findIndex((r) => r.id === id);
-  if (idx === -1) return null;
-  data[idx] = { ...data[idx], ...updates, updatedAt: new Date().toISOString() };
-  writeCollection(collection, data);
-  return data[idx];
+async function updateRecord(collection, id, updates) {
+  const { rows } = await pool.query(
+    "SELECT data FROM records WHERE id = $1 AND collection = $2",
+    [id, collection]
+  );
+  if (rows.length === 0) return null;
+  const updated = { ...rows[0].data, ...updates, updatedAt: new Date().toISOString() };
+  await pool.query(
+    "UPDATE records SET data = $1, updated_at = NOW() WHERE id = $2 AND collection = $3",
+    [JSON.stringify(updated), id, collection]
+  );
+  return updated;
 }
 
-function findRecords(collection, predicate) {
-  return readCollection(collection).filter(predicate);
+async function findRecord(collection, predicate) {
+  const all = await readCollection(collection);
+  return all.find(predicate) || null;
 }
 
-function findRecord(collection, predicate) {
-  return readCollection(collection).find(predicate) || null;
+async function findRecords(collection, predicate) {
+  const all = await readCollection(collection);
+  return all.filter(predicate);
 }
 
-module.exports = { readCollection, writeCollection, addRecord, updateRecord, findRecords, findRecord };
+module.exports = { init, readCollection, addRecord, updateRecord, findRecord, findRecords };

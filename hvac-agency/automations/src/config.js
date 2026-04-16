@@ -15,6 +15,9 @@ module.exports = {
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
     redirectUri: process.env.GOOGLE_REDIRECT_URI,
   },
+  database: {
+    url: process.env.DATABASE_URL,
+  },
   server: {
     port: parseInt(process.env.PORT || "3001", 10),
     webhookBaseUrl: process.env.WEBHOOK_BASE_URL || "http://localhost:3001",

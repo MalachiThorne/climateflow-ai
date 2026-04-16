@@ -1,5 +1,6 @@
-const { chat, buildLeadQualificationPrompt } = require("../ai");
+const { chat, chatWithTools, buildLeadQualificationPrompt } = require("../ai");
 const { sendSMS } = require("../sms");
+const { getAvailableSlots, bookAppointment, isCalendarConnected } = require("../calendar");
 const store = require("../store");
 
 const CONVERSATIONS = "lead_conversations";
@@ -15,14 +16,14 @@ async function handleMissedCall(callerPhone, business) {
 
   await sendSMS(callerPhone, initialMessage);
 
-  const lead = store.addRecord(LEADS, {
+  const lead = await store.addRecord(LEADS, {
     phone: callerPhone,
     businessId: business.id,
     status: "new",
     source: "missed_call",
   });
 
-  store.addRecord(CONVERSATIONS, {
+  await store.addRecord(CONVERSATIONS, {
     leadId: lead.id,
     phone: callerPhone,
     businessId: business.id,
@@ -33,8 +34,51 @@ async function handleMissedCall(callerPhone, business) {
   return lead;
 }
 
+async function processToolCalls(response, callerPhone, business) {
+  const toolUseBlocks = response.content.filter((b) => b.type === "tool_use");
+  const textBlocks = response.content.filter((b) => b.type === "text");
+  const toolResults = [];
+
+  for (const toolCall of toolUseBlocks) {
+    let result;
+
+    if (toolCall.name === "check_availability") {
+      if (!(await isCalendarConnected(business.id))) {
+        result = { error: "Calendar not connected. Tell the customer you'll confirm the time shortly and someone will call back to confirm." };
+      } else {
+        result = await getAvailableSlots(business.id, toolCall.input.date);
+      }
+    } else if (toolCall.name === "book_appointment") {
+      if (!(await isCalendarConnected(business.id))) {
+        result = { error: "Calendar not connected. Tell the customer the appointment request has been received and someone will call to confirm." };
+      } else {
+        result = await bookAppointment(business.id, {
+          customerName: toolCall.input.customer_name,
+          customerPhone: callerPhone,
+          date: toolCall.input.date,
+          time: toolCall.input.time,
+          serviceType: toolCall.input.service_type,
+          address: toolCall.input.address || "",
+        });
+        if (result.success) {
+          const lead = await store.findRecord(LEADS, (l) => l.phone === callerPhone && l.businessId === business.id);
+          if (lead) await store.updateRecord(LEADS, lead.id, { status: "booked" });
+        }
+      }
+    }
+
+    toolResults.push({
+      type: "tool_result",
+      tool_use_id: toolCall.id,
+      content: JSON.stringify(result),
+    });
+  }
+
+  return { toolResults, textMessage: textBlocks.map((b) => b.text).join("\n") };
+}
+
 async function handleIncomingSMS(callerPhone, messageBody, business) {
-  const conversation = store.findRecord(CONVERSATIONS, (c) => c.phone === callerPhone && c.businessId === business.id);
+  const conversation = await store.findRecord(CONVERSATIONS, (c) => c.phone === callerPhone && c.businessId === business.id);
 
   if (!conversation) {
     return handleMissedCall(callerPhone, business);
@@ -52,27 +96,59 @@ async function handleIncomingSMS(callerPhone, messageBody, business) {
     content: m.content,
   }));
 
-  const response = await chat(systemPrompt, messageBody, history.slice(0, -1));
+  const calendarConnected = await isCalendarConnected(business.id);
+  const useTools = calendarConnected ||
+    /schedul|appoint|book|available|when can|time slot/i.test(messageBody);
+
+  let finalText;
+
+  if (useTools) {
+    let response = await chatWithTools(systemPrompt, messageBody, history.slice(0, -1));
+    let { toolResults, textMessage } = await processToolCalls(response, callerPhone, business);
+
+    while (response.stop_reason === "tool_use" && toolResults.length > 0) {
+      const continueMessages = [
+        ...history,
+        { role: "assistant", content: response.content },
+        { role: "user", content: toolResults },
+      ];
+
+      response = await chatWithTools(systemPrompt, "", continueMessages);
+      const next = await processToolCalls(response, callerPhone, business);
+      toolResults = next.toolResults;
+      textMessage = next.textMessage || textMessage;
+    }
+
+    finalText = response.content
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
+      .join("\n") || textMessage;
+  } else {
+    finalText = await chat(systemPrompt, messageBody, history.slice(0, -1));
+  }
 
   conversation.messages.push({
     role: "assistant",
-    content: response,
+    content: finalText,
     timestamp: new Date().toISOString(),
   });
 
-  store.updateRecord(CONVERSATIONS, conversation.id, { messages: conversation.messages });
-  await sendSMS(callerPhone, response);
+  await store.updateRecord(CONVERSATIONS, conversation.id, { messages: conversation.messages });
+  await sendSMS(callerPhone, finalText);
 
   const isQualified =
     conversation.messages.length >= 4 &&
     conversation.messages.some((m) => m.content.toLowerCase().includes("address") || m.content.toLowerCase().includes("schedule") || m.content.toLowerCase().includes("appointment"));
 
   if (isQualified) {
-    store.updateRecord(LEADS, conversation.leadId, { status: "qualified" });
+    const lead = await store.findRecord(LEADS, (l) => l.phone === callerPhone && l.businessId === business.id);
+    if (lead && lead.status === "new") {
+      await store.updateRecord(LEADS, lead.id, { status: "qualified" });
+    }
   }
 
-  console.log(`[Lead Rescue] Replied to ${callerPhone}: ${response.substring(0, 80)}...`);
-  return response;
+  console.log(`[Lead Rescue] Replied to ${callerPhone}: ${finalText.substring(0, 80)}...`);
+  return finalText;
 }
 
 module.exports = { handleMissedCall, handleIncomingSMS };

@@ -2,24 +2,24 @@ const store = require("./store");
 
 const CLIENTS = "clients";
 
-function getClient(businessId) {
+async function getClient(businessId) {
   return store.findRecord(CLIENTS, (c) => c.id === businessId);
 }
 
-function getClientByPhone(twilioNumber) {
+async function getClientByPhone(twilioNumber) {
   return store.findRecord(CLIENTS, (c) => c.twilioNumber === twilioNumber);
 }
 
-function addClient(client) {
+async function addClient(client) {
   return store.addRecord(CLIENTS, client);
 }
 
-function listClients() {
+async function listClients() {
   return store.readCollection(CLIENTS);
 }
 
-function createSampleClient() {
-  const existing = store.findRecord(CLIENTS, (c) => c.id === "demo");
+async function createSampleClient() {
+  const existing = await store.findRecord(CLIENTS, (c) => c.id === "demo");
   if (existing) return existing;
 
   return store.addRecord(CLIENTS, {
@@ -35,7 +35,7 @@ function createSampleClient() {
       "Maintenance plans",
     ],
     hours: "Mon-Fri 8am-6pm, Emergency service 24/7",
-    twilioNumber: "+15551234567",
+    twilioNumber: "+19712659340",
     googleReviewLink: "https://g.page/r/portland-comfort-hvac/review",
     financingAvailable: true,
   });

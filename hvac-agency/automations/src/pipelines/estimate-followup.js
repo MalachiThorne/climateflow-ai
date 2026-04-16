@@ -12,7 +12,7 @@ const FOLLOW_UP_SCHEDULE = [
 ];
 
 async function addEstimate(estimate, business) {
-  const entry = store.addRecord(ESTIMATES, {
+  const entry = await store.addRecord(ESTIMATES, {
     customerName: estimate.customerName,
     customerPhone: estimate.customerPhone,
     amount: estimate.amount,
@@ -29,7 +29,7 @@ async function addEstimate(estimate, business) {
 
 async function processFollowUps(business) {
   const now = new Date();
-  const openEstimates = store.findRecords(
+  const openEstimates = await store.findRecords(
     ESTIMATES,
     (e) => e.businessId === business.id && e.status === "open" && new Date(e.nextFollowUp) <= now
   );
@@ -39,7 +39,7 @@ async function processFollowUps(business) {
   for (const estimate of openEstimates) {
     const scheduleEntry = FOLLOW_UP_SCHEDULE[estimate.followUpCount];
     if (!scheduleEntry) {
-      store.updateRecord(ESTIMATES, estimate.id, { status: "expired" });
+      await store.updateRecord(ESTIMATES, estimate.id, { status: "expired" });
       console.log(`[Estimate Follow-Up] Estimate for ${estimate.customerName} expired after all follow-ups`);
       continue;
     }
@@ -52,7 +52,7 @@ async function processFollowUps(business) {
       `Days since estimate: ${scheduleEntry.daysAfter}\n\n` +
       `Write a follow-up text message.`;
 
-    const existingConvo = store.findRecord(
+    const existingConvo = await store.findRecord(
       ESTIMATE_CONVERSATIONS,
       (c) => c.estimateId === estimate.id
     );
@@ -69,9 +69,9 @@ async function processFollowUps(business) {
     const messages = [...history, { role: "assistant", content: response, timestamp: now.toISOString() }];
 
     if (existingConvo) {
-      store.updateRecord(ESTIMATE_CONVERSATIONS, existingConvo.id, { messages });
+      await store.updateRecord(ESTIMATE_CONVERSATIONS, existingConvo.id, { messages });
     } else {
-      store.addRecord(ESTIMATE_CONVERSATIONS, {
+      await store.addRecord(ESTIMATE_CONVERSATIONS, {
         estimateId: estimate.id,
         phone: estimate.customerPhone,
         businessId: business.id,
@@ -85,7 +85,7 @@ async function processFollowUps(business) {
       ? new Date(Date.now() + nextSchedule.daysAfter * 24 * 60 * 60 * 1000).toISOString()
       : null;
 
-    store.updateRecord(ESTIMATES, estimate.id, {
+    await store.updateRecord(ESTIMATES, estimate.id, {
       followUpCount: nextIdx,
       nextFollowUp,
       lastFollowUp: now.toISOString(),
@@ -99,14 +99,14 @@ async function processFollowUps(business) {
 }
 
 async function handleEstimateReply(phone, messageBody, business) {
-  const estimate = store.findRecord(
+  const estimate = await store.findRecord(
     ESTIMATES,
     (e) => e.customerPhone === phone && e.businessId === business.id && e.status === "open"
   );
 
   if (!estimate) return null;
 
-  const conversation = store.findRecord(
+  const conversation = await store.findRecord(
     ESTIMATE_CONVERSATIONS,
     (c) => c.estimateId === estimate.id
   );
@@ -124,7 +124,7 @@ async function handleEstimateReply(phone, messageBody, business) {
   history.push({ role: "assistant", content: response, timestamp: new Date().toISOString() });
 
   if (conversation) {
-    store.updateRecord(ESTIMATE_CONVERSATIONS, conversation.id, { messages: history });
+    await store.updateRecord(ESTIMATE_CONVERSATIONS, conversation.id, { messages: history });
   }
 
   await sendSMS(phone, response);
@@ -133,10 +133,10 @@ async function handleEstimateReply(phone, messageBody, business) {
   const declined = messageBody.toLowerCase().match(/no thanks|not interested|stop|cancel|too expensive/);
 
   if (accepted) {
-    store.updateRecord(ESTIMATES, estimate.id, { status: "accepted" });
+    await store.updateRecord(ESTIMATES, estimate.id, { status: "accepted" });
     console.log(`[Estimate Follow-Up] ${estimate.customerName} ACCEPTED estimate!`);
   } else if (declined) {
-    store.updateRecord(ESTIMATES, estimate.id, { status: "declined" });
+    await store.updateRecord(ESTIMATES, estimate.id, { status: "declined" });
     console.log(`[Estimate Follow-Up] ${estimate.customerName} declined estimate`);
   }
 
