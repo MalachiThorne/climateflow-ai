@@ -1,0 +1,28 @@
+# Gitleaks configuration for ClimateFlow AI
+# Docs: https://github.com/gitleaks/gitleaks#configuration
+
+title = "ClimateFlow AI gitleaks config"
+
+[extend]
+# Use the official default ruleset as a base
+useDefault = true
+
+[[allowlists]]
+description = "Intentional dummy/test values in test files and examples"
+paths = [
+  '''test/smoke\.test\.js''',
+  '''test/webhooks\.test\.js''',
+  '''\.env\.example''',
+]
+
+[[allowlists]]
+description = "Known dummy values used only in test setup"
+regexes = [
+  # Stripe test placeholders
+  '''sk_test_dummy''',
+  '''pk_test_dummy''',
+  '''whsec_dummy''',
+  '''price_bundle_dummy''',
+  # Anthropic test placeholder
+  '''sk-ant-dummy''',
+]
