@@ -48,6 +48,15 @@ async function respondToReview(review, business) {
     await store.updateRecord(REVIEWS, stored.id, { suggestedResponse });
 
     console.log(`[Review Autopilot] Negative review from ${review.authorName} — flagged for owner approval`);
+
+    if (business.ownerPhone) {
+      const stars = "★".repeat(review.rating) + "☆".repeat(5 - review.rating);
+      const preview = review.text ? review.text.slice(0, 100) + (review.text.length > 100 ? "…" : "") : "";
+      const msg = `[ClimateFlow] ${stars} review needs your attention — ${review.authorName}: "${preview}" Reply suggested. Check your dashboard.`;
+      sendSMS(business.ownerPhone, msg, business.twilioNumber)
+        .catch((err) => console.error(`[Review Autopilot] Owner alert SMS failed:`, err.message));
+    }
+
     return { action: "flagged", suggestedResponse };
   }
 

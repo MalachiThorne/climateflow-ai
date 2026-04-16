@@ -187,6 +187,12 @@ async function handleEstimateReply(phone, messageBody, business) {
         console.error(`[Estimate Follow-Up] Owner alert email failed:`, err.message);
       }
     }
+    if (business.ownerPhone) {
+      const amount = typeof estimate.amount === "number" ? `$${estimate.amount.toLocaleString()}` : "";
+      const msg = `[ClimateFlow] Estimate accepted! ${estimate.customerName}${amount ? ` — ${amount}` : ""}. Call to schedule: ${estimate.customerPhone}`;
+      sendSMS(business.ownerPhone, msg, business.twilioNumber)
+        .catch((err) => console.error(`[Estimate Follow-Up] Owner alert SMS failed:`, err.message));
+    }
   } else if (declined) {
     await store.updateRecord(ESTIMATES, estimate.id, { status: "declined" });
     console.log(`[Estimate Follow-Up] ${estimate.customerName} declined estimate`);
