@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node src/server.js",
+    "dev": "doppler run -- node src/server.js",
     "test": "node --test \"test/**/*.test.js\""
   },
   "keywords": [],

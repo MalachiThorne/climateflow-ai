@@ -1,0 +1,3 @@
+setup:
+  project: climateflow-ai
+  config: dev
