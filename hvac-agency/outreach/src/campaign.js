@@ -73,7 +73,7 @@ async function runCampaign(templateKey, options = {}) {
       } else {
         const result = await sendEmail(email, subject, body, templateKey);
         if (result.sent) sent++;
-        if (result.skipped) skipped++;
+        if (result.skipped || result.suppressed) skipped++;
         if (result.limitReached) {
           console.log(`[Campaign] Daily limit reached. Stopping.`);
           break;

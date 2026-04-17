@@ -27,15 +27,6 @@ const csvWriter = createObjectCsvWriter({
   append: fs.existsSync(LEADS_FILE),
 });
 
-async function scrapeGoogleMaps(query, location) {
-  // Uses SerpAPI, Outscraper, or similar service in production.
-  // For now, this is a structured template that accepts data from any source.
-  console.log(`[Scraper] Would search Google Maps for: "${query}" in "${location}"`);
-  console.log(`[Scraper] In production, use SerpAPI ($50/mo) or Outscraper API`);
-  console.log(`[Scraper] For now, import leads manually via CSV or use import-leads.js`);
-  return [];
-}
-
 async function importFromCSV(inputFile) {
   const csv = require("csv-parser");
   const leads = [];
@@ -71,22 +62,4 @@ async function saveLeads(leads) {
   console.log(`[Scraper] Saved ${leads.length} leads to ${LEADS_FILE}`);
 }
 
-async function scrapeAndSave(cities, states) {
-  const allLeads = [];
-
-  for (const state of states) {
-    for (const city of cities) {
-      const query = `HVAC companies in ${city}, ${state}`;
-      const leads = await scrapeGoogleMaps(query, `${city}, ${state}`);
-      allLeads.push(...leads);
-    }
-  }
-
-  if (allLeads.length > 0) {
-    await saveLeads(allLeads);
-  }
-
-  return allLeads;
-}
-
-module.exports = { scrapeGoogleMaps, importFromCSV, saveLeads, scrapeAndSave };
+module.exports = { importFromCSV, saveLeads };

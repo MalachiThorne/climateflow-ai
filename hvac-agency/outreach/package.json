@@ -5,6 +5,11 @@
   "main": "index.js",
   "scripts": {
     "import": "node src/import-leads.js",
+    "pipeline": "node src/us-pipeline.js",
+    "pipeline:resume": "node src/us-pipeline.js --resume",
+    "pipeline:dry": "node src/us-pipeline.js --dry-run",
+    "pipeline:aggressive": "node src/us-pipeline.js --aggressive",
+    "enrich": "node src/enrich-emails.js",
     "campaign": "node src/campaign.js",
     "campaign:dry": "node src/campaign.js cold_intro --dry-run",
     "test": "echo \"Error: no test specified\" && exit 1"
