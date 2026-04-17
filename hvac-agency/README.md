@@ -74,3 +74,12 @@ node src/campaign.js follow_up_2
 5. [ ] Deploy automation server (Railway, Render, or VPS)
 6. [ ] Configure Twilio webhooks to point at deployed server
 7. [ ] Import HVAC leads and run first outreach campaign
+
+## Docs
+
+- `docs/go-live-checklist.md` — one-time pre-launch steps
+- `docs/qa-checklist.md` — manual QA pass before first paying client
+- `docs/ops-runbook.md` — day-to-day operations, incident runbooks, rotations
+- `docs/doppler-setup.md` — secrets management
+- `docs/phone-integration.md` — carrier forwarding options for clients
+- `docs/business-plan.md` — pricing, positioning, revenue plan
