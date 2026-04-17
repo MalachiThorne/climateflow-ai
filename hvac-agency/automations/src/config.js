@@ -3,6 +3,61 @@ require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 
 const { FEATURES } = require("./features");
 
+// Fail-fast validation. Missing required vars used to crash later at the point of
+// first use (Stripe, Twilio, DB, crypto), leading to partial startup where the HTTP
+// server answers but webhooks 500. Enumerate here and exit cleanly on boot instead.
+// Skipped in tests so modules can be imported with a minimal env.
+function validateRequiredEnv() {
+  if (process.env.NODE_ENV === "test" || process.env.SKIP_CONFIG_VALIDATION === "1") {
+    return;
+  }
+  const required = {
+    DATABASE_URL: "Postgres connection string",
+    ANTHROPIC_API_KEY: "Claude API key",
+    TWILIO_ACCOUNT_SID: "Twilio account SID",
+    TWILIO_AUTH_TOKEN: "Twilio auth token (also used for webhook signature validation)",
+    TWILIO_PHONE_NUMBER: "Default Twilio phone number",
+    STRIPE_SECRET_KEY: "Stripe secret key (sk_live_ or sk_test_)",
+    STRIPE_WEBHOOK_SECRET: "Stripe webhook signing secret (whsec_...)",
+    STRIPE_PUBLISHABLE_KEY: "Stripe publishable key (used on /signup payment form)",
+    GOOGLE_CLIENT_ID: "Google OAuth client id (calendar booking)",
+    GOOGLE_CLIENT_SECRET: "Google OAuth client secret",
+    GOOGLE_REDIRECT_URI: "Google OAuth redirect URI",
+    SMTP_USER: "SMTP username",
+    SMTP_PASS: "SMTP password / app password",
+    FROM_EMAIL: "Outbound email From: address",
+    API_KEY: "Internal API key for /api/review/* and /api/estimate endpoints",
+    URL_SIGNING_SECRET: "HMAC secret for signed billing/signup URLs",
+    TOKEN_ENCRYPTION_KEY: "64-char hex (32 bytes) AES-256 key for OAuth token at-rest encryption",
+    WEBHOOK_BASE_URL: "Public base URL of this server (used to build Stripe/Twilio callback URLs)",
+  };
+  const missing = [];
+  for (const [name, description] of Object.entries(required)) {
+    if (!process.env[name] || String(process.env[name]).trim() === "") {
+      missing.push(`  - ${name}: ${description}`);
+    }
+  }
+  if (missing.length > 0) {
+    console.error(
+      "\n[config] FATAL: required environment variables are missing:\n" +
+      missing.join("\n") +
+      "\n\nSet them in automations/.env (see .env.example) and restart.\n"
+    );
+    process.exit(1);
+  }
+  // Bonus: spot-check shapes that commonly get truncated/pasted wrong.
+  if (process.env.TOKEN_ENCRYPTION_KEY && process.env.TOKEN_ENCRYPTION_KEY.length !== 64) {
+    console.error("[config] FATAL: TOKEN_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes).");
+    process.exit(1);
+  }
+  if (process.env.STRIPE_WEBHOOK_SECRET && !process.env.STRIPE_WEBHOOK_SECRET.startsWith("whsec_")) {
+    console.error("[config] FATAL: STRIPE_WEBHOOK_SECRET must start with 'whsec_'.");
+    process.exit(1);
+  }
+}
+
+validateRequiredEnv();
+
 module.exports = {
   twilio: {
     accountSid: process.env.TWILIO_ACCOUNT_SID,
@@ -69,5 +124,15 @@ module.exports = {
   server: {
     port: parseInt(process.env.PORT || "3001", 10),
     webhookBaseUrl: process.env.WEBHOOK_BASE_URL || "http://localhost:3001",
+    // Public marketing-site URL (Next.js landing page). Used by signup.html to
+    // link out to /privacy and /terms. Leave empty to use same-origin relative
+    // paths (useful when landing + server are behind a shared reverse proxy).
+    landingBaseUrl: process.env.LANDING_BASE_URL || "https://climateflow.ai",
+  },
+  sentry: {
+    dsn: process.env.SENTRY_DSN || "",
+    environment: process.env.SENTRY_ENVIRONMENT || process.env.NODE_ENV || "development",
+    release: process.env.SENTRY_RELEASE || "",
+    tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_SAMPLE_RATE || "0"),
   },
 };

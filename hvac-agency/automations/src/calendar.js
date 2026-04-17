@@ -71,9 +71,25 @@ async function getAuthenticatedClient(businessId) {
   const oauth2Client = createOAuth2Client();
   oauth2Client.setCredentials(plainTokens);
 
+  // Google issues a refreshed access_token (and sometimes a new refresh_token) here.
+  // If this write fails and the old refresh_token is revoked — which happens the first
+  // time Google rotates it — the next calendar call will 401 silently and the business
+  // drops out of the booking flow with no visible signal. Surface the failure loudly
+  // so it can be caught in logs / alerts, and keep retrying by not swallowing the
+  // error handle off the event emitter.
   oauth2Client.on("tokens", async (newTokens) => {
-    const merged = encryptTokens({ ...plainTokens, ...newTokens });
-    await store.updateRecord(TOKENS, record.id, { tokens: merged });
+    try {
+      const merged = encryptTokens({ ...plainTokens, ...newTokens });
+      await store.updateRecord(TOKENS, record.id, { tokens: merged });
+      // Keep our in-memory copy current in case this handler fires again before the
+      // next getAuthenticatedClient() call re-decrypts from the store.
+      Object.assign(plainTokens, newTokens);
+    } catch (err) {
+      console.error(
+        `[Calendar] CRITICAL: failed to persist refreshed OAuth tokens for business=${record.businessId}. ` +
+        `Next calendar call will likely 401. err=${err.message}`
+      );
+    }
   });
 
   return oauth2Client;

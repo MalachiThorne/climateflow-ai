@@ -5,6 +5,11 @@ const express = require("express");
 const cron = require("node-cron");
 const twilio = require("twilio");
 const config = require("./config");
+const sentry = require("./sentry");
+
+// Initialize error monitoring before anything else can throw. No-op when
+// SENTRY_DSN is unset, so local dev and tests are unaffected.
+sentry.init();
 const { getClientByPhone, listClients, createSampleClient, addClient } = require("./clients");
 const { handleMissedCall, handleIncomingSMS } = require("./pipelines/lead-rescue");
 const { requestReview, respondToReview } = require("./pipelines/review-autopilot");
@@ -24,6 +29,10 @@ const app = express();
 // Behind Railway's load balancer; trust the proxy so req.ip + HTTPS detection work.
 // Set to 1 hop — do NOT use "true" (which would let any caller spoof X-Forwarded-For).
 app.set("trust proxy", 1);
+
+// Sentry request handler must run before all routes so in-flight requests are
+// associated with captured errors. No-op when SENTRY_DSN is unset.
+app.use(sentry.requestHandler());
 
 // --- SECURITY HEADERS ---
 // Applied before everything else. /signup adds a payment-form CSP on top of these.
@@ -852,6 +861,20 @@ cron.schedule("15 * * * *", async () => {
 });
 }
 
+// --- ERROR HANDLING ---
+// Must come after all routes. Sentry.errorHandler only forwards 5xx /
+// uncaught errors; 4xx responses thrown by handlers are left alone.
+app.use(sentry.errorHandler());
+
+// Final fallback so Express doesn't leak stack traces to the client. The
+// error is already captured by Sentry above (if configured).
+app.use((err, req, res, next) => {
+  console.error("[server] unhandled error:", err && err.stack || err);
+  if (res.headersSent) return next(err);
+  const status = (err && (err.status || err.statusCode)) || 500;
+  res.status(status).json({ error: status >= 500 ? "internal_error" : (err.message || "error") });
+});
+
 // --- STARTUP & GRACEFUL SHUTDOWN ---
 
 async function start() {
@@ -873,8 +896,9 @@ async function start() {
 
   process.on("SIGTERM", () => {
     console.log("[Server] SIGTERM — shutting down gracefully...");
-    server.close(() => {
+    server.close(async () => {
       console.log("[Server] HTTP server closed.");
+      await sentry.flush(2000);
       process.exit(0);
     });
   });
