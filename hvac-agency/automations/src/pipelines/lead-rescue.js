@@ -1,5 +1,6 @@
 const { chat, chatWithTools, buildLeadQualificationPrompt } = require("../ai");
 const { sendSMS, scrubAIReply } = require("../sms");
+const { sendWithFallback } = require("../smsRetry");
 const { getAvailableSlots, bookAppointment, isCalendarConnected } = require("../calendar");
 const store = require("../store");
 const aiQuota = require("../aiQuota");
@@ -56,14 +57,21 @@ async function handleMissedCall(callerPhone, business) {
     `A customer just called from ${callerPhone} and we missed the call. Send the first text message to them.`
   );
 
-  await sendSMS(callerPhone, scrubAIReply(initialMessage, business.twilioNumber), business.twilioNumber);
-
+  // Persist lead FIRST so state survives an SMS provider outage. If the send fails,
+  // smsRetry queues it and a cron drains the queue — the lead is not lost.
   const lead = await store.addRecord(LEADS, {
     phone: callerPhone,
     businessId: business.id,
     status: "new",
     source: "missed_call",
   });
+
+  await sendWithFallback(
+    callerPhone,
+    scrubAIReply(initialMessage, business.twilioNumber),
+    business.twilioNumber,
+    `lead-rescue:initial:${lead.id}`
+  );
 
   await store.addRecord(CONVERSATIONS, {
     leadId: lead.id,
@@ -117,7 +125,13 @@ async function processToolCalls(response, callerPhone, business) {
         });
         if (result.success) {
           const lead = await store.findRecordByFields(LEADS, { phone: callerPhone, businessId: business.id });
-          if (lead) await store.updateRecord(LEADS, lead.id, { status: "booked" });
+          if (lead) await store.updateRecord(LEADS, lead.id, {
+            status: "booked",
+            reviewDue: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+            customerName: input.customer_name.trim(),
+            serviceType: input.service_type.trim(),
+            reviewRequested: false,
+          });
 
           // Real-time alert to the owner if they provided a mobile number at signup.
           if (business.ownerPhone) {
@@ -161,7 +175,7 @@ async function handleIncomingSMS(callerPhone, messageBody, business) {
   if (!quota.allowed) {
     console.warn(`[Lead Rescue] AI quota exceeded for ${callerPhone} @ ${business.id} (${quota.count}/${quota.cap}) — sending fallback`);
     await store.updateRecord(CONVERSATIONS, conversation.id, { messages: conversation.messages });
-    await sendSMS(callerPhone, aiQuota.QUOTA_FALLBACK_MESSAGE, business.twilioNumber);
+    await sendWithFallback(callerPhone, aiQuota.QUOTA_FALLBACK_MESSAGE, business.twilioNumber, `lead-rescue:quota-fallback:${conversation.id}`);
     return aiQuota.QUOTA_FALLBACK_MESSAGE;
   }
 
@@ -185,7 +199,12 @@ async function handleIncomingSMS(callerPhone, messageBody, business) {
     let { toolResults, textMessage } = await processToolCalls(response, callerPhone, business);
 
     let iterations = 0;
-    while (response.stop_reason === "tool_use" && toolResults.length > 0 && iterations < MAX_TOOL_ITERATIONS) {
+    let loopExhausted = false;
+    while (response.stop_reason === "tool_use" && toolResults.length > 0) {
+      if (iterations >= MAX_TOOL_ITERATIONS) {
+        loopExhausted = true;
+        break;
+      }
       iterations++;
       const continueMessages = [
         ...history,
@@ -202,10 +221,35 @@ async function handleIncomingSMS(callerPhone, messageBody, business) {
       textMessage = next.textMessage || textMessage;
     }
 
-    finalText = response.content
-      .filter((b) => b.type === "text")
-      .map((b) => b.text)
-      .join("\n") || textMessage;
+    if (loopExhausted) {
+      // The model is stuck in a tool_use ping-pong (e.g. repeatedly querying slots
+      // without committing to a booking, or confused by a prompt injection). Don't
+      // send partial model output to the customer — it reads as incoherent and may
+      // leak internal tool chatter. Bail to a human-handoff message and flag the
+      // lead so the owner knows to call back.
+      console.warn(`[Lead Rescue] Tool-use loop exhausted for ${callerPhone} @ ${business.id} — handing off to owner.`);
+      finalText =
+        "Thanks — I want to make sure we get this right. Someone from " +
+        `${business.name} will give you a call back shortly.`;
+      const lead = await store.findRecordByFields(LEADS, { phone: callerPhone, businessId: business.id });
+      if (lead) {
+        await store.updateRecord(LEADS, lead.id, {
+          status: "needs_human_followup",
+          handoffReason: "tool_loop_exhausted",
+          handoffAt: new Date().toISOString(),
+        });
+      }
+      if (business.ownerPhone) {
+        const alertMsg = `[ClimateFlow] Lead needs a callback — ${callerPhone} got stuck in our booking flow. Check dashboard.`;
+        sendSMS(business.ownerPhone, alertMsg, business.twilioNumber)
+          .catch((err) => console.error(`[Lead Rescue] Handoff owner-alert SMS failed: ${err.message}`));
+      }
+    } else {
+      finalText = response.content
+        .filter((b) => b.type === "text")
+        .map((b) => b.text)
+        .join("\n") || textMessage;
+    }
   } else {
     finalText = await chat(systemPrompt, messageBody, history.slice(0, -1), { source: "customer" });
   }
@@ -217,7 +261,7 @@ async function handleIncomingSMS(callerPhone, messageBody, business) {
   });
 
   await store.updateRecord(CONVERSATIONS, conversation.id, { messages: conversation.messages });
-  await sendSMS(callerPhone, scrubAIReply(finalText, business.twilioNumber), business.twilioNumber);
+  await sendWithFallback(callerPhone, scrubAIReply(finalText, business.twilioNumber), business.twilioNumber, `lead-rescue:reply:${conversation.id}`);
 
   // Only qualify based on what the *customer* said, not the AI's own messages
   const userMessages = conversation.messages.filter((m) => m.role === "user");

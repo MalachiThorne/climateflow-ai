@@ -1,9 +1,10 @@
-const { chat, buildReviewResponsePrompt } = require("../ai");
+const { chat, buildReviewResponsePrompt, extractReviewFromEmail } = require("../ai");
 const { sendSMS } = require("../sms");
 const store = require("../store");
 
 const REVIEWS = "reviews";
 const REVIEW_REQUESTS = "review_requests";
+const PROCESSED_REVIEW_EMAILS = "processed_review_emails";
 
 async function requestReview(customerPhone, customerName, jobType, business) {
   const message =
@@ -92,4 +93,77 @@ async function sendFollowUpReviewRequest(customerPhone, customerName, business) 
   console.log(`[Review Autopilot] Follow-up review request sent to ${customerName}`);
 }
 
-module.exports = { requestReview, respondToReview, sendFollowUpReviewRequest };
+// Entry point for the Gmail ingest. Called once per email routed to
+// `support+reviews-<businessId>@`. Extracts structured review fields via
+// Claude, dedups on Gmail messageId, and hands off to the standard
+// respondToReview pipeline. Low-confidence extractions are stored for manual
+// owner review rather than auto-responded to — spam + misrouted emails don't
+// warrant an AI-drafted reply.
+async function ingestReviewEmail({ businessId, messageId, subject, body, fromHeader }) {
+  const already = await store.findRecordByField(PROCESSED_REVIEW_EMAILS, "messageId", messageId);
+  if (already) return { skipped: "already_processed" };
+
+  const business = await store.findRecordByField("clients", "id", businessId);
+  if (!business) {
+    await store.addRecord(PROCESSED_REVIEW_EMAILS, { messageId, businessId, status: "no_business" });
+    return { skipped: "no_business" };
+  }
+  if (business.suspended) {
+    await store.addRecord(PROCESSED_REVIEW_EMAILS, { messageId, businessId, status: "suspended" });
+    return { skipped: "suspended" };
+  }
+
+  let extracted;
+  try {
+    extracted = await extractReviewFromEmail({ subject, body });
+  } catch (err) {
+    console.error(`[Review Email] Extraction failed for ${messageId}: ${err.message}`);
+    // Do not record as processed — the Gmail cron will leave it UNREAD and
+    // retry on the next tick. Transient Anthropic errors shouldn't drop data.
+    throw err;
+  }
+
+  if (extracted.confidence === "low") {
+    await store.addRecord(REVIEWS, {
+      businessId,
+      authorName: extracted.authorName,
+      rating: extracted.rating,
+      text: extracted.reviewText,
+      platform: "email",
+      status: "pending_owner_approval",
+      source: "email_low_confidence",
+      emailSubject: subject || null,
+      emailFrom: fromHeader || null,
+      suggestedResponse: null,
+    });
+    await store.addRecord(PROCESSED_REVIEW_EMAILS, { messageId, businessId, status: "low_confidence" });
+    console.log(`[Review Email] Low-confidence extraction for ${business.name} — flagged for owner approval`);
+    return { action: "flagged_low_confidence" };
+  }
+
+  const result = await respondToReview(
+    {
+      authorName: extracted.authorName,
+      rating: extracted.rating,
+      text: extracted.reviewText,
+      platform: "email",
+    },
+    business
+  );
+  await store.addRecord(PROCESSED_REVIEW_EMAILS, {
+    messageId,
+    businessId,
+    status: "processed",
+    rating: extracted.rating,
+    action: result.action,
+  });
+  return { action: result.action, rating: extracted.rating };
+}
+
+module.exports = {
+  requestReview,
+  respondToReview,
+  sendFollowUpReviewRequest,
+  ingestReviewEmail,
+  PROCESSED_REVIEW_EMAILS,
+};

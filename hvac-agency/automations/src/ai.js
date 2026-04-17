@@ -1,7 +1,17 @@
 const Anthropic = require("@anthropic-ai/sdk");
 const config = require("./config");
 
-const client = new Anthropic({ apiKey: config.anthropic.apiKey });
+// maxRetries above the SDK default of 2: we're always on a customer-facing webhook
+// path, so burning a few extra seconds on transient 429/5xx is much better than
+// returning a failed reply or a 500 to Twilio. SDK handles exponential backoff +
+// retries on 408/409/429/5xx/network errors automatically. Hard request timeout
+// caps tail latency so a stalled upstream can't hold the HTTP handler open past
+// the Twilio 15s webhook budget.
+const client = new Anthropic({
+  apiKey: config.anthropic.apiKey,
+  maxRetries: 4,
+  timeout: 12 * 1000,
+});
 
 const BOOKING_TOOLS = [
   {
@@ -143,7 +153,7 @@ Service area: ${sandbox(business.serviceArea)}
 Business hours: ${sandbox(business.hours)}
 ${pricingBlock}
 
-If the issue is an emergency (no heat in winter, no AC in summer, gas smell, water leak), immediately flag it and say a tech will call back within 15 minutes.
+If the issue is an emergency (${sandbox(business.emergencyDefinition || "no heat in winter, no AC in summer, gas smell, water leak")}), immediately flag it and say a tech will call back within 15 minutes.
 
 When the customer is ready to schedule:
 1. Use the check_availability tool to find open slots for their preferred date
@@ -200,6 +210,120 @@ Financing available: ${business.financingAvailable ? "Yes — monthly payment pl
 Owner name: ${sandbox(business.ownerName)}`;
 }
 
+// Structured-extraction tool for parsing the payload of a Google review-
+// notification email into the fields our review pipeline expects. We force a
+// single tool call — the model has no free-text path, so the response is
+// always either a well-formed extraction or a tool_use block we can inspect.
+const REVIEW_EXTRACT_TOOLS = [
+  {
+    name: "record_review",
+    description: "Record the structured fields parsed from a Google review notification email.",
+    input_schema: {
+      type: "object",
+      properties: {
+        authorName: { type: "string", description: "Reviewer's display name as shown in the email. Use 'Customer' if not present." },
+        rating: { type: "integer", description: "Star rating 1–5. If the email shows a rating out of a different scale, map proportionally.", minimum: 1, maximum: 5 },
+        reviewText: { type: "string", description: "The reviewer's own written comment. Empty string if the reviewer left only a star rating." },
+        confidence: { type: "string", enum: ["high", "low"], description: "'high' if this email clearly contains a review; 'low' if you had to guess or the email might not be a review notification at all." },
+      },
+      required: ["authorName", "rating", "reviewText", "confidence"],
+    },
+  },
+];
+
+// Extracts { authorName, rating, reviewText, confidence } from a Google review
+// email's subject + body. Email bodies are attacker-controlled (spam + prompt-
+// injection risk), so we fence them as source: "review". Caller should treat
+// low-confidence extractions as "needs manual review" and not auto-respond.
+async function extractReviewFromEmail({ subject = "", body = "" }) {
+  const systemPrompt = `You parse Google review notification emails for an HVAC company. Your only job is to extract structured fields and call the record_review tool. Do not respond with natural language — always use the tool. If the email does not look like a review notification, still call the tool but set confidence to "low".`;
+
+  const userMessage =
+    `Subject: ${subject}\n\n` +
+    `Body:\n${body}`;
+
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 400,
+    system: systemPrompt,
+    messages: applyFenceToMessages(
+      [{ role: "user", content: userMessage }],
+      "review"
+    ),
+    tools: REVIEW_EXTRACT_TOOLS,
+    tool_choice: { type: "tool", name: "record_review" },
+  });
+
+  const toolUse = response.content.find((b) => b.type === "tool_use" && b.name === "record_review");
+  if (!toolUse || !toolUse.input) {
+    return { authorName: "Customer", rating: 3, reviewText: "", confidence: "low" };
+  }
+  const { authorName, rating, reviewText, confidence } = toolUse.input;
+  return {
+    authorName: typeof authorName === "string" && authorName.trim() ? authorName.trim() : "Customer",
+    rating: Number.isInteger(rating) && rating >= 1 && rating <= 5 ? rating : 3,
+    reviewText: typeof reviewText === "string" ? reviewText : "",
+    confidence: confidence === "high" ? "high" : "low",
+  };
+}
+
+const ESTIMATE_EXTRACT_TOOLS = [
+  {
+    name: "record_estimate",
+    description: "Record the structured fields parsed from a BCC'd estimate/quote email.",
+    input_schema: {
+      type: "object",
+      properties: {
+        customerName: { type: "string", description: "The customer who received the quote. Use 'Customer' if not present." },
+        customerPhone: { type: "string", description: "Customer phone number in any format. Empty string if not present." },
+        customerEmail: { type: "string", description: "Customer email address. Empty string if not present." },
+        amount: { type: "number", description: "Total dollar amount of the estimate. Use 0 if not clearly stated." },
+        description: { type: "string", description: "Short summary of the work being quoted (e.g., 'AC system replacement', 'furnace repair'). Empty string if not present." },
+        confidence: { type: "string", enum: ["high", "low"], description: "'high' if this clearly appears to be an estimate email with identifiable customer + amount; 'low' if major fields are guessed or missing." },
+      },
+      required: ["customerName", "customerPhone", "customerEmail", "amount", "description", "confidence"],
+    },
+  },
+];
+
+// Extracts { customerName, customerPhone, customerEmail, amount, description,
+// confidence } from a BCC'd estimate email. Same fencing / low-confidence
+// semantics as extractReviewFromEmail — caller queues low-confidence parses for
+// owner review rather than triggering automatic follow-ups.
+async function extractEstimateFromEmail({ subject = "", body = "" }) {
+  const systemPrompt = `You parse HVAC estimate/quote emails that were BCC'd to an automation inbox. Your only job is to extract structured fields and call the record_estimate tool. Always use the tool. If the email does not appear to be an estimate (wrong kind of email, too little detail), still call the tool but set confidence to "low" and fill best-effort values.`;
+
+  const userMessage =
+    `Subject: ${subject}\n\n` +
+    `Body:\n${body}`;
+
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 500,
+    system: systemPrompt,
+    messages: applyFenceToMessages(
+      [{ role: "user", content: userMessage }],
+      "customer"
+    ),
+    tools: ESTIMATE_EXTRACT_TOOLS,
+    tool_choice: { type: "tool", name: "record_estimate" },
+  });
+
+  const toolUse = response.content.find((b) => b.type === "tool_use" && b.name === "record_estimate");
+  if (!toolUse || !toolUse.input) {
+    return { customerName: "Customer", customerPhone: "", customerEmail: "", amount: 0, description: "", confidence: "low" };
+  }
+  const { customerName, customerPhone, customerEmail, amount, description, confidence } = toolUse.input;
+  return {
+    customerName: typeof customerName === "string" && customerName.trim() ? customerName.trim() : "Customer",
+    customerPhone: typeof customerPhone === "string" ? customerPhone.trim() : "",
+    customerEmail: typeof customerEmail === "string" ? customerEmail.trim() : "",
+    amount: Number.isFinite(amount) && amount >= 0 ? amount : 0,
+    description: typeof description === "string" ? description.trim() : "",
+    confidence: confidence === "high" ? "high" : "low",
+  };
+}
+
 module.exports = {
   chat,
   chatWithTools,
@@ -209,4 +333,6 @@ module.exports = {
   buildLeadQualificationPrompt,
   buildReviewResponsePrompt,
   buildEstimateFollowUpPrompt,
+  extractReviewFromEmail,
+  extractEstimateFromEmail,
 };

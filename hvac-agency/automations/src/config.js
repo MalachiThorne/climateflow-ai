@@ -85,6 +85,11 @@ module.exports = {
     clientId: process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
     redirectUri: process.env.GOOGLE_REDIRECT_URI,
+    // Separate redirect URI for the system Gmail mailbox (support@climateflow.ai).
+    // If unset, falls back to a path derived from WEBHOOK_BASE_URL — this keeps
+    // single-redirect Google OAuth configs working without extra env wiring.
+    gmailRedirectUri: process.env.GOOGLE_GMAIL_REDIRECT_URI
+      || (process.env.WEBHOOK_BASE_URL ? `${process.env.WEBHOOK_BASE_URL.replace(/\/$/, "")}/api/gmail/callback` : null),
   },
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY,
