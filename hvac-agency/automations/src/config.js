@@ -17,6 +17,7 @@ function validateRequiredEnv() {
     TWILIO_ACCOUNT_SID: "Twilio account SID",
     TWILIO_AUTH_TOKEN: "Twilio auth token (also used for webhook signature validation)",
     TWILIO_PHONE_NUMBER: "Default Twilio phone number",
+    TWILIO_TEST_CALLER_NUMBER: "Dedicated Twilio number used to originate the forwarding self-test call (must differ from TWILIO_PHONE_NUMBER)",
     STRIPE_SECRET_KEY: "Stripe secret key (sk_live_ or sk_test_)",
     STRIPE_WEBHOOK_SECRET: "Stripe webhook signing secret (whsec_...)",
     STRIPE_PUBLISHABLE_KEY: "Stripe publishable key (used on /signup payment form)",
@@ -54,6 +55,18 @@ function validateRequiredEnv() {
     console.error("[config] FATAL: STRIPE_WEBHOOK_SECRET must start with 'whsec_'.");
     process.exit(1);
   }
+  // The test caller must be a distinct Twilio-owned number. If it matches the
+  // default business line, the test loop would originate a call from our own
+  // DID and we'd have no reliable way to distinguish forwarded legs from a real
+  // inbound call.
+  if (
+    process.env.TWILIO_PHONE_NUMBER &&
+    process.env.TWILIO_TEST_CALLER_NUMBER &&
+    process.env.TWILIO_PHONE_NUMBER.trim() === process.env.TWILIO_TEST_CALLER_NUMBER.trim()
+  ) {
+    console.error("[config] FATAL: TWILIO_TEST_CALLER_NUMBER must differ from TWILIO_PHONE_NUMBER.");
+    process.exit(1);
+  }
 }
 
 validateRequiredEnv();
@@ -63,6 +76,7 @@ module.exports = {
     accountSid: process.env.TWILIO_ACCOUNT_SID,
     authToken: process.env.TWILIO_AUTH_TOKEN,
     phoneNumber: process.env.TWILIO_PHONE_NUMBER,
+    testCallerNumber: process.env.TWILIO_TEST_CALLER_NUMBER,
   },
   anthropic: {
     apiKey: process.env.ANTHROPIC_API_KEY,

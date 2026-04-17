@@ -69,4 +69,23 @@ async function provisionPhoneNumber(areaCode) {
   };
 }
 
-module.exports = { sendSMS, provisionPhoneNumber };
+// Originates a silent test call for the forwarding self-test. The target is the
+// owner's existing business line; if call-forwarding is wired correctly the call
+// will be redirected to the client's Twilio DID, which invokes our voice webhook.
+// TwiML plays a short silent pause so nobody picks up a loud test tone if the
+// forwarding isn't yet in place. Returns the CallSid.
+async function originateTestCall(toNumber) {
+  if (!config.twilio.testCallerNumber) {
+    throw new Error("TWILIO_TEST_CALLER_NUMBER not configured");
+  }
+  const twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Pause length="8"/><Hangup/></Response>';
+  const call = await twilioClient.calls.create({
+    to: toNumber,
+    from: config.twilio.testCallerNumber,
+    twiml,
+    timeout: 20,
+  });
+  return call.sid;
+}
+
+module.exports = { sendSMS, provisionPhoneNumber, scrubAIReply, originateTestCall };

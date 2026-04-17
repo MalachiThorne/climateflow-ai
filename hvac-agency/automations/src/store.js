@@ -228,6 +228,39 @@ async function claimRecord(collection, id, flagField) {
   return rows.length ? rows[0].data : null;
 }
 
+// Atomic lease for retry-queue rows. Flips status from "pending" → "processing"
+// in a single UPDATE so two overlapping cron runs (or two app instances) cannot
+// both pick up the same row and double-send. Only claims rows whose
+// nextAttemptAt has elapsed. Also reclaims stale "processing" leases older than
+// staleLeaseMs — without this, a worker that crashes mid-send would leave the
+// row stuck forever.
+async function claimDueRecord(collection, id, leaseToken, staleLeaseMs = 10 * 60 * 1000) {
+  const { rows } = await pool.query(
+    `UPDATE records
+     SET data = jsonb_set(
+                  jsonb_set(
+                    jsonb_set(data, '{status}', '"processing"'::jsonb),
+                    '{leaseToken}', to_jsonb($3::text)
+                  ),
+                  '{leasedAt}', to_jsonb(NOW()::text)
+                ),
+         updated_at = NOW()
+     WHERE id = $1 AND collection = $2
+       AND (
+         (data->>'status' = 'pending'
+          AND (data->>'nextAttemptAt' IS NULL
+               OR (data->>'nextAttemptAt')::timestamptz <= NOW()))
+         OR
+         (data->>'status' = 'processing'
+          AND (data->>'leasedAt' IS NULL
+               OR (data->>'leasedAt')::timestamptz < NOW() - ($4::bigint * INTERVAL '1 millisecond')))
+       )
+     RETURNING data`,
+    [id, collection, leaseToken, staleLeaseMs]
+  );
+  return rows.length ? rows[0].data : null;
+}
+
 // Atomic delete-if-exists; returns the deleted record's data or null. Useful for
 // single-use tokens (OAuth state, magic links) where "consume" must be atomic.
 async function deleteRecord(collection, id) {
@@ -293,6 +326,7 @@ module.exports = {
   addRecord,
   updateRecord,
   claimRecord,
+  claimDueRecord,
   incrementCounter,
   deleteRecord,
   findRecord,
