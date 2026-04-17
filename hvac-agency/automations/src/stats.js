@@ -1,14 +1,17 @@
 const store = require("./store");
 
-// Return a { since, until } window for the last full week (Mon–Sun).
-// Called Monday morning, so "last week" = the 7 days ending yesterday (Sunday).
+// Return a { since, until } window for the last full Mon–Sun week.
+// "until" is the start of the most recent Monday (exclusive end — covers last Sunday).
+// "since" is 7 days before that = start of the previous Monday.
+// Safe to call any day of the week: always returns the last COMPLETE Mon–Sun week.
 function lastWeekWindow() {
   const now = new Date();
-  // Roll back to last Sunday midnight UTC
+  now.setUTCHours(0, 0, 0, 0);
+  // Roll back to most recent Monday (day 1). If today is Sunday (0), that's 6 days back.
+  const dayOfWeek = now.getUTCDay();
+  const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
   const until = new Date(now);
-  until.setUTCHours(0, 0, 0, 0);
-  until.setUTCDate(until.getUTCDate() - ((until.getUTCDay() + 0) % 7 || 7));
-  // Roll back a further 7 days to last Monday midnight UTC
+  until.setUTCDate(now.getUTCDate() - daysToMonday);
   const since = new Date(until);
   since.setUTCDate(since.getUTCDate() - 7);
   return { since, until };
@@ -62,4 +65,37 @@ async function getClientStats(businessId, since, until) {
   };
 }
 
-module.exports = { getClientStats, lastWeekWindow };
+// Return { since, until } for the last full calendar month.
+// Called on the 1st of the month, so "last month" = the previous calendar month.
+function lastMonthWindow() {
+  const now = new Date();
+  const until = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const since = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  return { since, until };
+}
+
+// Aggregate review reputation stats for the given month window.
+async function getMonthlyReputationStats(businessId, since, until) {
+  const allReviews = await store.findRecordsByField("reviews", "businessId", businessId);
+  const inWindow = allReviews.filter((r) => {
+    const created = new Date(r.createdAt);
+    return created >= since && created < until;
+  });
+
+  const total = inWindow.length;
+  const avgRating = total > 0
+    ? Math.round((inWindow.reduce((sum, r) => sum + (r.rating || 0), 0) / total) * 10) / 10
+    : null;
+  const byRating = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+  for (const r of inWindow) {
+    const star = Math.round(r.rating);
+    if (star >= 1 && star <= 5) byRating[star]++;
+  }
+  const autoResponded = inWindow.filter((r) => r.status === "responded").length;
+  const flaggedForApproval = inWindow.filter((r) => r.status === "pending_owner_approval").length;
+  const requestsSent = await store.countRecordsInRange("review_requests", businessId, since, until);
+
+  return { since, until, total, avgRating, byRating, autoResponded, flaggedForApproval, requestsSent };
+}
+
+module.exports = { getClientStats, lastWeekWindow, lastMonthWindow, getMonthlyReputationStats };

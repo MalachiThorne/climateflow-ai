@@ -46,6 +46,10 @@ async function init() {
     `CREATE INDEX IF NOT EXISTS idx_records_open_estimates
       ON records(collection, (data->>'businessId'), (data->>'nextFollowUp'))
       WHERE data->>'status' = 'open'`,
+
+    // Index for countRecordsInRange — stats queries filter by collection + businessId + createdAt range.
+    `CREATE INDEX IF NOT EXISTS idx_records_coll_businessid_createdat
+      ON records(collection, (data->>'businessId'), ((data->>'createdAt')::timestamptz))`,
   ];
 
   for (const sql of statements) {
@@ -307,6 +311,22 @@ async function countRecordsInRange(collection, businessId, since, until, filters
   return parseInt(rows[0].count, 10);
 }
 
+// Delete all records belonging to a business — used by E2E tests for cleanup.
+// Only available outside production to prevent accidental data loss.
+async function deleteByBusinessId(businessId) {
+  if (process.env.NODE_ENV === "production") throw new Error("deleteByBusinessId is not allowed in production");
+  const { rowCount } = await pool.query(
+    "DELETE FROM records WHERE data->>'businessId' = $1",
+    [businessId]
+  );
+  // Also delete the client record itself (stored under its own id, not businessId)
+  await pool.query(
+    "DELETE FROM records WHERE collection = 'clients' AND id = $1",
+    [businessId]
+  );
+  return rowCount;
+}
+
 // Bulk delete by expiry — cheaper than find-then-delete when no per-record action is needed.
 async function deleteExpiredRecords(collection, thresholdMs) {
   const { rowCount } = await pool.query(
@@ -338,4 +358,5 @@ module.exports = {
   findExpiredRecords,
   deleteExpiredRecords,
   countRecordsInRange,
+  deleteByBusinessId,
 };

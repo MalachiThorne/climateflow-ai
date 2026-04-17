@@ -43,7 +43,7 @@ function text(value) {
   return h(value).replace(/\n/g, "<br>");
 }
 
-async function sendWelcomeEmail(ownerEmail, ownerName, businessName, calendarConnectUrl, phoneNumber, billingUrl) {
+async function sendWelcomeEmail(ownerEmail, ownerName, businessName, calendarConnectUrl, phoneNumber, billingUrl, wizardUrl) {
   await transporter.sendMail({
     from: `"${config.email.fromName}" <${config.email.fromEmail}>`,
     to: ownerEmail,
@@ -97,13 +97,16 @@ async function sendWelcomeEmail(ownerEmail, ownerName, businessName, calendarCon
         </p>
       </div>
 
-      <p style="color:#e2e8f0;font-size:16px;line-height:1.6;margin:0 0 8px;"><strong style="color:#fff;">Step 2 — Connect your calendar</strong></p>
+      <p style="color:#e2e8f0;font-size:16px;line-height:1.6;margin:0 0 8px;"><strong style="color:#fff;">Step 2 — Finish setup</strong></p>
       <p style="color:#94a3b8;font-size:15px;line-height:1.6;margin:0 0 24px;">
-        This lets the AI book appointments directly into your schedule. Takes 30 seconds.
+        Your setup checklist has your profile, calendar connection, and forwarding test — all in one place.
       </p>
-      <a href="${safeUrl(calendarConnectUrl)}" style="display:inline-block;background:linear-gradient(135deg,#0ea5e9,#38bdf8);color:#fff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:15px;">
-        Connect Google Calendar →
+      <a href="${safeUrl(wizardUrl || calendarConnectUrl)}" style="display:inline-block;background:linear-gradient(135deg,#0ea5e9,#38bdf8);color:#fff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:15px;">
+        Open setup checklist →
       </a>
+      <p style="color:#64748b;font-size:12px;line-height:1.5;margin:14px 0 0;">
+        Or jump straight to <a href="${safeUrl(calendarConnectUrl)}" style="color:#38bdf8;">connect Google Calendar</a>.
+      </p>
 
       <hr style="border:none;border-top:1px solid #1e3a5f;margin:40px 0;">
 
@@ -404,6 +407,87 @@ async function sendCalendarNudgeEmail(ownerEmail, ownerName, businessName, calen
   });
 }
 
+async function sendMonthlyReportEmail(ownerEmail, ownerName, businessName, stats) {
+  const monthName = new Date(stats.since).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+  const avgDisplay = stats.avgRating !== null ? stats.avgRating.toFixed(1) : "—";
+  const stars = stats.avgRating !== null
+    ? "★".repeat(Math.round(stats.avgRating)) + "☆".repeat(5 - Math.round(stats.avgRating))
+    : "No reviews";
+
+  function bar(count, total, color) {
+    const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+      <span style="color:#64748b;font-size:13px;width:16px;text-align:right;">${count}</span>
+      <div style="flex:1;background:#1e3a5f;border-radius:4px;height:8px;overflow:hidden;">
+        <div style="width:${pct}%;background:${color};height:100%;border-radius:4px;"></div>
+      </div>
+    </div>`;
+  }
+
+  await transporter.sendMail({
+    from: `"${config.email.fromName}" <${config.email.fromEmail}>`,
+    to: ownerEmail,
+    subject: `${businessName} reputation report — ${monthName}`,
+    html: `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0a0f1e;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <div style="max-width:600px;margin:40px auto;background:#0d1526;border:1px solid #1e3a5f;border-radius:12px;overflow:hidden;">
+    <div style="background:linear-gradient(135deg,#7c3aed,#a78bfa);padding:28px 40px;">
+      <p style="color:rgba(255,255,255,0.8);font-size:13px;margin:0 0 4px;text-transform:uppercase;letter-spacing:0.08em;">Monthly Reputation Report</p>
+      <h1 style="color:#fff;margin:0;font-size:22px;font-weight:700;">${h(businessName)}</h1>
+      <p style="color:rgba(255,255,255,0.75);font-size:14px;margin:6px 0 0;">${monthName}</p>
+    </div>
+
+    <div style="padding:32px 40px;">
+      <p style="color:#94a3b8;font-size:15px;margin:0 0 28px;">Hi ${h(ownerName)}, here's your online reputation summary for last month.</p>
+
+      <div style="background:#070c18;border:1px solid #1e3a5f;border-radius:10px;padding:24px;margin:0 0 28px;text-align:center;">
+        <p style="color:#a78bfa;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;margin:0 0 8px;">Average Rating</p>
+        <p style="color:#f1f5f9;font-size:48px;font-weight:800;margin:0;line-height:1;">${h(avgDisplay)}</p>
+        <p style="color:#fbbf24;font-size:20px;margin:8px 0 4px;letter-spacing:2px;">${h(stars)}</p>
+        <p style="color:#64748b;font-size:13px;margin:0;">from ${stats.total} review${stats.total !== 1 ? "s" : ""} this month</p>
+      </div>
+
+      ${stats.total > 0 ? `
+      <p style="color:#f1f5f9;font-size:13px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;margin:0 0 12px;">Rating Breakdown</p>
+      <div style="background:#070c18;border:1px solid #1e3a5f;border-radius:8px;padding:16px 20px;margin:0 0 28px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;"><span style="color:#fbbf24;font-size:13px;width:16px;">5★</span>${bar(stats.byRating[5], stats.total, "#34d399")}</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;"><span style="color:#fbbf24;font-size:13px;width:16px;">4★</span>${bar(stats.byRating[4], stats.total, "#38bdf8")}</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;"><span style="color:#fbbf24;font-size:13px;width:16px;">3★</span>${bar(stats.byRating[3], stats.total, "#818cf8")}</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;"><span style="color:#fbbf24;font-size:13px;width:16px;">2★</span>${bar(stats.byRating[2], stats.total, "#fb923c")}</div>
+        <div style="display:flex;align-items:center;gap:8px;"><span style="color:#fbbf24;font-size:13px;width:16px;">1★</span>${bar(stats.byRating[1], stats.total, "#f87171")}</div>
+      </div>` : ""}
+
+      <p style="color:#f1f5f9;font-size:13px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;margin:0 0 12px;">Review Autopilot Activity</p>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:0 0 28px;">
+        <div style="text-align:center;padding:16px 12px;background:#070c18;border:1px solid #1e3a5f;border-radius:8px;">
+          <div style="font-size:32px;font-weight:800;color:#38bdf8;line-height:1;">${stats.requestsSent}</div>
+          <div style="font-size:12px;color:#64748b;margin-top:4px;line-height:1.3;">Requests sent</div>
+        </div>
+        <div style="text-align:center;padding:16px 12px;background:#070c18;border:1px solid #1e3a5f;border-radius:8px;">
+          <div style="font-size:32px;font-weight:800;color:#34d399;line-height:1;">${stats.autoResponded}</div>
+          <div style="font-size:12px;color:#64748b;margin-top:4px;line-height:1.3;">Auto-responded</div>
+        </div>
+        <div style="text-align:center;padding:16px 12px;background:#070c18;border:1px solid #1e3a5f;border-radius:8px;">
+          <div style="font-size:32px;font-weight:800;color:#fb923c;line-height:1;">${stats.flaggedForApproval}</div>
+          <div style="font-size:12px;color:#64748b;margin-top:4px;line-height:1.3;">Flagged for you</div>
+        </div>
+      </div>
+
+      <hr style="border:none;border-top:1px solid #1e3a5f;margin:0 0 20px;">
+      <p style="color:#475569;font-size:12px;line-height:1.6;margin:0;">
+        Sent automatically on the 1st of each month by ClimateFlow AI.
+        Questions? Reply to this email.
+      </p>
+    </div>
+  </div>
+</body>
+</html>`,
+  });
+}
+
 module.exports = {
   sendWelcomeEmail,
   sendTrialEndingEmail,
@@ -414,4 +498,5 @@ module.exports = {
   sendBillingLinkEmail,
   sendWeeklyDigestEmail,
   sendCalendarNudgeEmail,
+  sendMonthlyReportEmail,
 };
