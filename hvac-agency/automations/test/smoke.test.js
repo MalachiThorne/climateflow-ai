@@ -109,6 +109,8 @@ test("POST /api/signup rejects invalid email format with 400", async () => {
       businessName: "Test HVAC",
       ownerName: "Test Owner",
       ownerEmail: "not-an-email",
+      ownerPhone: "+15035551234",
+      officePhone: "+15035557890",
       serviceArea: "Portland",
       paymentMethodId: "pm_dummy",
     },
