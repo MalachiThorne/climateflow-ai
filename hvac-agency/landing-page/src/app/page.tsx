@@ -99,7 +99,7 @@ export default function Home() {
                     clipRule="evenodd"
                   />
                 </svg>
-                Setup in 3 minutes
+                Setup in 15 minutes
               </div>
               <div className="flex items-center gap-2">
                 <svg
@@ -298,7 +298,7 @@ export default function Home() {
           <div className="max-w-6xl mx-auto px-6">
             <div className="text-center mb-16">
               <h2 className="text-3xl md:text-4xl font-bold text-foreground">
-                Live in 3 Minutes
+                Live in 15 Minutes
               </h2>
             </div>
             <div className="grid md:grid-cols-4 gap-8">
@@ -430,7 +430,7 @@ export default function Home() {
               Start Your Free 7-Day Trial
             </h2>
             <p className="text-lg text-muted mb-10">
-              Takes 3 minutes. Your AI system goes live immediately — dedicated phone number, lead rescue, estimate follow-up, and review autopilot all active from day one.
+              Takes about 15 minutes. Your dedicated phone number and Lead Rescue go live immediately; Review Autopilot and Estimate Follow-Up activate in a few extra steps after signup.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center items-center mb-8">
               <a
@@ -444,7 +444,7 @@ export default function Home() {
               <span>✓ 7-day free trial</span>
               <span>✓ No setup fees</span>
               <span>✓ Cancel anytime</span>
-              <span>✓ Live in 3 minutes</span>
+              <span>✓ Live in 15 minutes</span>
             </div>
           </div>
         </section>
@@ -474,6 +474,20 @@ export default function Home() {
           <p className="text-gray-400">
             AI-powered operations for HVAC companies.
           </p>
+          <div className="flex justify-center gap-6 mt-6 text-sm text-gray-400">
+            <a href="/privacy" className="hover:text-white transition-colors">
+              Privacy Policy
+            </a>
+            <a href="/terms" className="hover:text-white transition-colors">
+              Terms of Service
+            </a>
+            <a
+              href="mailto:support@climateflow.ai"
+              className="hover:text-white transition-colors"
+            >
+              Contact
+            </a>
+          </div>
           <p className="text-gray-500 text-sm mt-6">
             &copy; {new Date().getFullYear()} ClimateFlow AI. All rights
             reserved.
