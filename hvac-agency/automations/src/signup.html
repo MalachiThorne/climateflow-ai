@@ -178,7 +178,7 @@
     <div class="right">
       <div id="form-wrapper">
         <h2>Start your free trial</h2>
-        <p class="sub">Takes 3 minutes. Your AI system goes live immediately.</p>
+        <p class="sub">Takes about 15 minutes. Lead Rescue goes live immediately; review + estimate features activate in a few extra steps.</p>
 
         <form id="signup-form">
           <div class="form-section">
@@ -200,6 +200,10 @@
             <div class="field">
               <label>Service area</label>
               <input type="text" name="serviceArea" placeholder="Portland, OR metro area" required>
+            </div>
+            <div class="field">
+              <label>Your existing business line <span style="color:var(--dim);font-weight:400;">(we'll forward missed calls from here)</span></label>
+              <input type="tel" name="officePhone" placeholder="+15035557890" required>
             </div>
           </div>
 
@@ -239,8 +243,9 @@
 
           <button type="submit" id="submit-btn">Start free trial →</button>
           <p class="terms">
-            By signing up you agree to our <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>.
-            Powered by <a href="#">Stripe</a> — we never store your card details.
+            By signing up you agree to our <a href="__LANDING_BASE_URL__/terms" target="_blank" rel="noopener">Terms of Service</a> and <a href="__LANDING_BASE_URL__/privacy" target="_blank" rel="noopener">Privacy Policy</a>.
+            Powered by <a href="https://stripe.com" target="_blank" rel="noopener">Stripe</a> — we never store your card details.
+            By providing your phone number you consent to receive service-related SMS from ClimateFlow AI; reply STOP to opt out, HELP for help. Message &amp; data rates may apply.
           </p>
         </form>
       </div>
@@ -351,6 +356,7 @@
             ownerName: form.ownerName.value,
             ownerEmail: form.ownerEmail.value,
             ownerPhone: form.ownerPhone.value || null,
+            officePhone: form.officePhone.value,
             serviceArea: form.serviceArea.value,
             areaCode: form.areaCode.value,
             paymentMethodId: paymentMethod.id,
