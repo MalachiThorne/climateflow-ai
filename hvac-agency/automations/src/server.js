@@ -10,19 +10,33 @@ const sentry = require("./sentry");
 // Initialize error monitoring before anything else can throw. No-op when
 // SENTRY_DSN is unset, so local dev and tests are unaffected.
 sentry.init();
-const { getClientByPhone, listClients, createSampleClient, addClient } = require("./clients");
+const { getClientByPhone, listClients, createSampleClient, addClient, rotateOnboardingTokenNonce } = require("./clients");
 const { handleMissedCall, handleIncomingSMS } = require("./pipelines/lead-rescue");
-const { requestReview, respondToReview } = require("./pipelines/review-autopilot");
-const { addEstimate, processFollowUps, handleEstimateReply } = require("./pipelines/estimate-followup");
+const { requestReview, respondToReview, ingestReviewEmail } = require("./pipelines/review-autopilot");
+const {
+  addEstimate,
+  processFollowUps,
+  handleEstimateReply,
+  ingestEstimateEmail,
+  approveQueuedEstimate,
+  rejectQueuedEstimate,
+  listPendingQueue,
+  createEstimateFromPaste,
+} = require("./pipelines/estimate-followup");
+const estimatesUI = require("./estimatesUI");
+const dashboardUI = require("./dashboardUI");
 const { checkForNewReviews } = require("./review-monitor");
 const { getAuthUrl, consumeOAuthState, handleOAuthCallback, getAvailableSlots, bookAppointment, isCalendarConnected } = require("./calendar");
-const { provisionPhoneNumber } = require("./sms");
+const { provisionPhoneNumber, originateTestCall } = require("./sms");
+const smsRetry = require("./smsRetry");
 const { createSubscription, cancelSubscription, createBillingPortalSession, constructWebhookEvent, handleWebhookEvent } = require("./billing");
-const { sendWelcomeEmail, sendTrialEndingEmail, sendPaymentFailedEmail, sendVerificationEmail, sendBillingLinkEmail, sendWeeklyDigestEmail, sendCalendarNudgeEmail } = require("./email");
-const { getClientStats, lastWeekWindow } = require("./stats");
+const { sendWelcomeEmail, sendTrialEndingEmail, sendPaymentFailedEmail, sendVerificationEmail, sendBillingLinkEmail, sendWeeklyDigestEmail, sendCalendarNudgeEmail, sendMonthlyReportEmail } = require("./email");
+const { getClientStats, lastWeekWindow, lastMonthWindow, getMonthlyReputationStats } = require("./stats");
 const { FEATURES, ALL_FEATURES, hasFeature } = require("./features");
 const signedUrl = require("./signedUrl");
 const store = require("./store");
+const onboarding = require("./onboarding");
+const gmailIngest = require("./gmailIngest");
 
 const app = express();
 
@@ -54,8 +68,98 @@ function redactEmail(email) {
   return `${email.slice(0, 1)}***${email.slice(at)}`;
 }
 
+// CSP for owner-facing HTML (wizard, dashboard, profile, estimates paste/queue).
+// All HTML is same-origin and uses inline <style>/<script>; no third-party
+// script hosts are allowed. Without this, an XSS that bypassed h() could pull
+// in external scripts — with it, the attacker is limited to what inline can
+// do on this origin.
+const OWNER_HTML_CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join("; ");
+
+function setOwnerHtmlCsp(res) {
+  res.setHeader("Content-Security-Policy", OWNER_HTML_CSP);
+}
+
+// Normalize a North-American phone number to E.164 (+1XXXXXXXXXX). Returns null
+// for any input that isn't a plausible NANP or E.164 number. Used for officePhone
+// (owner's existing business line we'll call to test call-forwarding) so Twilio
+// won't reject the outbound test-call with a 21211.
+// Maps the estimate-pipeline error codes to a user-facing string. Keeping the
+// translation here so the pipeline stays pure and the UI layer controls copy.
+function errorMessage(code) {
+  switch (code) {
+    case "invalid_phone": return "Please enter a valid customer phone number (e.g., +15035551234).";
+    case "invalid_amount": return "Enter a positive dollar amount for the estimate total.";
+    case "missing_description": return "Add a short description of the work being quoted.";
+    case "not_found": return "That estimate could not be found.";
+    case "not_pending": return "That estimate has already been handled.";
+    default: return "Something went wrong. Try again.";
+  }
+}
+
+function normalizePhone(raw) {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const digits = trimmed.replace(/[^\d]/g, "");
+  if (trimmed.startsWith("+")) {
+    if (/^[1-9]\d{7,14}$/.test(digits)) return `+${digits}`;
+    return null;
+  }
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return null;
+}
+
 // Stripe webhooks require the raw body for signature verification.
 // This route must be defined BEFORE express.json() is applied globally.
+//
+// Webhook providers (Stripe, Twilio) retry on any non-2xx and occasionally redeliver
+// on network hiccups even after success. Without dedup, the same event can double-
+// charge emails, double-suspend accounts, or create two leads for the same missed
+// call. Keep a bounded in-memory set of processed IDs per namespace with a TTL long
+// enough to cover the provider's retry window. For multi-instance deploys, swap to
+// a shared store (Redis/Postgres).
+function createDedupSet({ ttlMs, maxSize }) {
+  const seen = new Map(); // id -> timestamp
+  return {
+    isProcessed(id) {
+      if (!id) return false;
+      const ts = seen.get(id);
+      if (!ts) return false;
+      if (Date.now() - ts > ttlMs) {
+        seen.delete(id);
+        return false;
+      }
+      return true;
+    },
+    mark(id) {
+      if (!id) return;
+      const now = Date.now();
+      seen.set(id, now);
+      if (seen.size > maxSize) {
+        for (const [k, ts] of seen) {
+          if (now - ts > ttlMs) seen.delete(k);
+          if (seen.size <= maxSize) break;
+        }
+      }
+    },
+  };
+}
+const stripeEventDedup = createDedupSet({ ttlMs: 24 * 60 * 60 * 1000, maxSize: 10000 });
+// Twilio retries delivery for up to a few hours. 6h window easily covers it.
+const twilioSmsDedup = createDedupSet({ ttlMs: 6 * 60 * 60 * 1000, maxSize: 20000 });
+const twilioCallDedup = createDedupSet({ ttlMs: 6 * 60 * 60 * 1000, maxSize: 20000 });
+
 app.post(
   "/api/billing/webhook",
   express.raw({ type: "application/json" }),
@@ -67,6 +171,11 @@ app.post(
     } catch (err) {
       console.error("[Billing Webhook] Signature verification failed:", err.message);
       return res.status(400).send(`Webhook error: ${err.message}`);
+    }
+
+    if (stripeEventDedup.isProcessed(event.id)) {
+      console.log(`[Billing Webhook] Duplicate event ${event.id} (${event.type}) — acking without reprocessing.`);
+      return res.json({ received: true, duplicate: true });
     }
 
     try {
@@ -104,6 +213,7 @@ app.post(
         }
       }
 
+      stripeEventDedup.mark(event.id);
       res.json({ received: true });
     } catch (err) {
       logAndFail("Billing Webhook", err, res);
@@ -151,15 +261,31 @@ function requireApiKey(req, res, next) {
 // Middleware factory for HMAC-signed passwordless URLs. The :businessId path param
 // is the subject bound into the MAC, so a token signed for one business can never
 // be replayed against another.
-function requireSignedUrl(purpose) {
-  return (req, res, next) => {
+//
+// When opts.bindToClientNonce is set, the MAC also incorporates the target
+// client's onboardingTokenNonce. Rotating that nonce invalidates every
+// outstanding onboarding link for the client (e.g. if the owner suspects the
+// welcome email was forwarded). Legacy clients with no nonce fall through to
+// the empty-string binding — their old links keep working until the nonce is
+// rotated for the first time.
+function requireSignedUrl(purpose, opts = {}) {
+  return async (req, res, next) => {
     const subject = req.params.businessId;
     const token = req.query.t;
     const expiresAt = req.query.e;
     if (!subject || !token || !expiresAt) {
       return res.status(403).send("Link missing or invalid. Request a new one from your email.");
     }
-    if (!signedUrl.verify(purpose, subject, token, expiresAt)) {
+    let nonce = "";
+    if (opts.bindToClientNonce) {
+      const client = await store.findRecordByField("clients", "id", subject);
+      if (!client) {
+        // Don't leak client-existence via timing — just fail the same way as an expired link.
+        return res.status(403).send("Link expired or invalid. Request a new one from your email.");
+      }
+      nonce = client.onboardingTokenNonce || "";
+    }
+    if (!signedUrl.verify(purpose, subject, token, expiresAt, nonce)) {
       return res.status(403).send("Link expired or invalid. Request a new one from your email.");
     }
     next();
@@ -185,10 +311,19 @@ function validateTwilioSignature(req, res, next) {
 }
 
 // --- RATE LIMITING ---
-// In-memory per-instance counter. Fine for a single Railway dyno; if we ever scale
-// horizontally, swap this for a Redis-backed limiter (e.g. rate-limiter-flexible)
-// so limits aren't bypassable by hitting different instances round-robin.
+// In-memory per-instance counter. Fine for a single Railway dyno; if we ever
+// scale horizontally the limit is bypassable by round-robining instances.
 // Relies on app.set("trust proxy", 1) above so req.ip reflects the real client.
+//
+// TODO(scale): migrate to a Redis-backed limiter when we move beyond one dyno.
+// Drop-in path: replace rateLimitStore with `rate-limiter-flexible`'s
+// RateLimiterRedis, keep the same (key, windowMs, max) shape, and keep the
+// middleware factory below untouched — each limiter becomes a named key prefix
+// (e.g. "rl:signup", "rl:verify"). Set `blockDuration` to 0 so the window
+// resets on the next request after expiry, matching current behavior. Add
+// REDIS_URL to required env in config.js. For now, a single dyno means bypass
+// requires a botnet large enough that Stripe/Twilio-side abuse protections
+// (card velocity, per-number throttles) are the effective ceiling anyway.
 const rateLimitStore = new Map();
 
 function rateLimit(windowMs, max) {
@@ -207,16 +342,33 @@ function rateLimit(windowMs, max) {
   };
 }
 
-const signupLimiter = rateLimit(60 * 60 * 1000, 10); // 10 per hour per IP
+// Signup is expensive downstream (Stripe customer + trial sub + verification
+// email + eventual Twilio provisioning). 10/hr per IP was too generous —
+// tightened to 5/hr so a single origin can't chew through 100 Stripe customer
+// records in a day while we wait for the per-email dedup below to reject them.
+const signupLimiter = rateLimit(60 * 60 * 1000, 5);
 const verifyLimiter = rateLimit(60 * 60 * 1000, 20);
 const billingLinkLimiter = rateLimit(60 * 60 * 1000, 10);
+// Dashboard fires 3 list-queries per load; cap refresh storms from a broken tab
+// or auto-reloader. Signed token is already subject-scoped so this is a DB-load
+// safety, not an auth boundary.
+const dashboardLimiter = rateLimit(60 * 1000, 60);
 
 // --- HEALTH CHECK ---
 
 app.get("/health", async (req, res) => {
   try {
     await store.healthCheck();
-    res.json({ status: "ok", uptime: process.uptime() });
+    const mem = process.memoryUsage();
+    res.json({
+      status: "ok",
+      uptime: process.uptime(),
+      memory: {
+        rss: mem.rss,
+        heapUsed: mem.heapUsed,
+        heapTotal: mem.heapTotal,
+      },
+    });
   } catch {
     res.status(503).json({ status: "error", db: "unreachable" });
   }
@@ -229,9 +381,11 @@ app.get("/health", async (req, res) => {
 // and Stripe iframes are the only permitted frame sources. 'unsafe-inline' is required
 // for the small script block in signup.html but not for any script fetched cross-origin.
 app.get("/signup", (req, res) => {
+  const landingBaseUrl = (config.server.landingBaseUrl || "").replace(/\/$/, "");
   const html = fs
     .readFileSync(path.join(__dirname, "signup.html"), "utf8")
-    .split("__STRIPE_PUBLISHABLE_KEY__").join(config.stripe.publishableKey || "");
+    .split("__STRIPE_PUBLISHABLE_KEY__").join(config.stripe.publishableKey || "")
+    .split("__LANDING_BASE_URL__").join(landingBaseUrl);
   res.setHeader("Content-Type", "text/html");
   res.setHeader(
     "Content-Security-Policy",
@@ -273,13 +427,26 @@ const BILLING_LINK_TTL_SECONDS = 30 * 60;
 // Twilio is NOT provisioned until the email is verified — this prevents email-
 // spoofing signups from burning a real phone number.
 app.post("/api/signup", signupLimiter, async (req, res) => {
-  const { businessName, ownerName, ownerEmail, ownerPhone, serviceArea, areaCode, paymentMethodId, plan } = req.body;
+  const { businessName, ownerName, ownerEmail, ownerPhone, officePhone, serviceArea, areaCode, paymentMethodId, plan } = req.body;
 
-  if (!businessName || !ownerName || !ownerEmail || !serviceArea || !paymentMethodId) {
+  if (!businessName || !ownerName || !ownerEmail || !serviceArea || !paymentMethodId || !officePhone) {
     return res.status(400).json({ error: "All fields are required" });
   }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ownerEmail)) {
     return res.status(400).json({ error: "Please enter a valid email address" });
+  }
+  const normalizedOfficePhone = normalizePhone(officePhone);
+  if (!normalizedOfficePhone) {
+    return res.status(400).json({ error: "Please enter a valid phone number for your existing business line (e.g., +15035557890)." });
+  }
+  // Mobile alert number — optional. If provided, it must also be well-formed so
+  // we don't silently keep an unparseable value that later fails at Twilio send.
+  let normalizedOwnerPhone = null;
+  if (ownerPhone) {
+    normalizedOwnerPhone = normalizePhone(ownerPhone);
+    if (!normalizedOwnerPhone) {
+      return res.status(400).json({ error: "Please enter a valid mobile number for job alerts." });
+    }
   }
 
   const planId = plan || "bundle";
@@ -289,6 +456,31 @@ app.post("/api/signup", signupLimiter, async (req, res) => {
   }
   if (!selectedPlan.priceId) {
     return res.status(400).json({ error: `Plan ${planId} is not currently available` });
+  }
+
+  // Per-email dedup: if a non-expired pending_signups row exists for this
+  // address, refuse a second signup instead of creating a second Stripe
+  // customer + trial sub. Existing owners are tolerated here — a real
+  // reacquire flow is for the billing portal, not the signup page — but
+  // re-running signup during the 24h verification window would double-charge
+  // and double-provision on verify.
+  const normalizedEmail = String(ownerEmail).trim().toLowerCase();
+  try {
+    const existingPending = await store.findRecord(PENDING_SIGNUPS, (r) =>
+      typeof r.ownerEmail === "string" &&
+      r.ownerEmail.trim().toLowerCase() === normalizedEmail &&
+      (!r.expiresAt || r.expiresAt > Date.now()) &&
+      !r.verified
+    );
+    if (existingPending) {
+      return res.status(409).json({
+        error: "A signup for this email is already in progress. Check your inbox for the verification link, or try again in 24 hours.",
+      });
+    }
+  } catch (err) {
+    // If the lookup fails we fall through to the signup path — the unique-ness
+    // is a guardrail, not an auth boundary. Logging is enough.
+    console.warn(`[Signup] dedup lookup failed: ${err.message}`);
   }
 
   try {
@@ -305,7 +497,8 @@ app.post("/api/signup", signupLimiter, async (req, res) => {
       businessName,
       ownerName,
       ownerEmail,
-      ownerPhone: ownerPhone || null,
+      ownerPhone: normalizedOwnerPhone,
+      officePhone: normalizedOfficePhone,
       serviceArea,
       areaCode: areaCode || "503",
       planId: selectedPlan.id,
@@ -387,6 +580,7 @@ app.get("/api/signup/verify/:pendingId", verifyLimiter, async (req, res) => {
       ownerName: pending.ownerName,
       ownerEmail: pending.ownerEmail,
       ownerPhone: pending.ownerPhone || null,
+      officePhone: pending.officePhone || null,
       serviceArea: pending.serviceArea,
       services: ["AC repair", "Furnace repair", "Heat pump service", "Maintenance plans"],
       hours: "Mon-Fri 8am-6pm, Emergency service 24/7",
@@ -420,6 +614,15 @@ app.get("/api/signup/verify/:pendingId", verifyLimiter, async (req, res) => {
       client.id,
       BILLING_LINK_TTL_SECONDS
     );
+    const wizardUrl = signedUrl.buildUrl(
+      config.server.webhookBaseUrl,
+      `/onboarding/${client.id}`,
+      "onboarding",
+      client.id,
+      14 * 24 * 60 * 60, // 14-day window — long enough for a small-business owner to work through setup
+      {},
+      client.onboardingTokenNonce || ""
+    );
 
     try {
       await sendWelcomeEmail(
@@ -428,7 +631,8 @@ app.get("/api/signup/verify/:pendingId", verifyLimiter, async (req, res) => {
         pending.businessName,
         calendarConnectUrl,
         phone.phoneNumber,
-        billingUrl
+        billingUrl,
+        wizardUrl
       );
     } catch (err) {
       console.error("[Signup Verify] welcome email failed:", err.message);
@@ -436,11 +640,335 @@ app.get("/api/signup/verify/:pendingId", verifyLimiter, async (req, res) => {
 
     console.log(`[Signup] Verified + provisioned: ${pending.businessName} — ${phone.phoneNumber} (${redactEmail(pending.ownerEmail)})`);
 
-    const safePhone = String(phone.phoneNumber).replace(/[^\d+]/g, "");
-    const safeCal = calendarConnectUrl.replace(/[^a-zA-Z0-9:/?=&._\-%]/g, "");
-    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Verified</title><style>body{background:#070c18;color:#f1f5f9;font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.box{background:#0d1526;border:1px solid #1e3a5f;border-radius:12px;padding:40px;max-width:480px;text-align:center}h1{color:#34d399;font-size:26px;margin:0 0 12px}p{color:#94a3b8;line-height:1.6;margin:0 0 16px}.phone{background:#0a1020;border:1px solid #1e3a5f;border-radius:8px;padding:12px 20px;font-size:22px;font-weight:700;color:#38bdf8;margin:16px 0;display:inline-block}a.btn{display:inline-block;background:linear-gradient(135deg,#0ea5e9,#38bdf8);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600}</style></head><body><div class="box"><h1>Email verified</h1><p>Your ClimateFlow AI automation is live. Your dedicated business number:</p><div class="phone">${safePhone}</div><p>We sent setup details to your email. One last step — connect your Google Calendar so the AI can book jobs:</p><a class="btn" href="${safeCal}">Connect Google Calendar →</a></div></body></html>`);
+    // Skip the standalone success page — drop the owner directly into the
+    // wizard with a signed token good for 14 days. The wizard shows the same
+    // phone number + calendar-connect CTA plus the rest of the checklist, so
+    // the old terminal success screen is redundant.
+    res.redirect(303, wizardUrl);
   } catch (err) {
     logAndFail("Signup Verify", err, res);
+  }
+});
+
+// Onboarding wizard shell — top-level checklist. Verify success and welcome
+// email both target this route; individual steps link off to profile,
+// calendar connect, paste form, etc. Signed URL (same "onboarding" purpose
+// as the deeper steps) so the whole flow shares one token.
+app.get("/onboarding/:businessId", requireSignedUrl("onboarding", { bindToClientNonce: true }), async (req, res) => {
+  try {
+    const businessId = req.params.businessId;
+    const ctx = await onboarding.loadProfileContext(businessId);
+    if (!ctx) return res.status(404).send("Not found");
+    const qs = new URLSearchParams({ t: req.query.t, e: req.query.e }).toString();
+    const linkBuilder = (p) => `${p}?${qs}`;
+    const calendarConnected = await isCalendarConnected(businessId);
+    const calendarConnectUrl = signedUrl.buildUrl(
+      config.server.webhookBaseUrl,
+      `/api/calendar/connect/${businessId}`,
+      "calendar_connect",
+      businessId,
+      BILLING_LINK_TTL_SECONDS
+    );
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    setOwnerHtmlCsp(res);
+    res.send(onboarding.renderWizardPage({
+      client: ctx.client,
+      state: ctx.state,
+      isCalendarConnected: calendarConnected,
+      calendarConnectUrl,
+      features: {
+        leadRescue: hasFeature(ctx.client, FEATURES.LEAD_RESCUE),
+        reviewAutopilot: hasFeature(ctx.client, FEATURES.REVIEW_AUTOPILOT),
+        estimateFollowUp: hasFeature(ctx.client, FEATURES.ESTIMATE_FOLLOWUP),
+      },
+      linkBuilder,
+    }));
+  } catch (err) {
+    logAndFail("Onboarding Wizard", err, res);
+  }
+});
+
+// Owner dashboard — 7-day pipeline activity plus setup status. Shares the
+// "onboarding" signed-URL purpose so one token gates the whole owner-facing
+// surface (wizard, profile, estimates, dashboard). Links to the billing portal
+// are generated on demand via the request-link flow, so we don't hand out a
+// dashboard link that doubles as a billing-portal link.
+app.get("/dashboard/:businessId", dashboardLimiter, requireSignedUrl("onboarding", { bindToClientNonce: true }), async (req, res) => {
+  try {
+    const businessId = req.params.businessId;
+    const ctx = await onboarding.loadProfileContext(businessId);
+    if (!ctx) return res.status(404).send("Not found");
+    const qs = new URLSearchParams({ t: req.query.t, e: req.query.e }).toString();
+    const linkBuilder = (p) => `${p}?${qs}`;
+
+    const until = Date.now();
+    const since = until - 7 * 24 * 60 * 60 * 1000;
+    const inWindow = (ts) => {
+      const t = new Date(ts).getTime();
+      return t >= since && t < until;
+    };
+
+    const features = {
+      leadRescue: hasFeature(ctx.client, FEATURES.LEAD_RESCUE),
+      reviewAutopilot: hasFeature(ctx.client, FEATURES.REVIEW_AUTOPILOT),
+      estimateFollowUp: hasFeature(ctx.client, FEATURES.ESTIMATE_FOLLOWUP),
+    };
+
+    // Fetch the per-business rows we need, then compute in JS. Two benefits
+    // over getClientStats:
+    //   (1) Lead counts use the additive model — a booked lead is credited to
+    //       rescued+qualified+booked (states progress linearly; a booked lead
+    //       did pass through rescued and qualified by definition).
+    //   (2) "Open estimates" reflects the live total, not just estimates
+    //       created in the last 7 days — otherwise an owner with 20 older
+    //       open estimates reads 0 and thinks the pipeline is broken.
+    const [leads, estimates, reviewReqs, reviews, calendarConnected, queue] = await Promise.all([
+      features.leadRescue ? store.findRecordsByField("leads", "businessId", businessId) : Promise.resolve([]),
+      features.estimateFollowUp ? store.findRecordsByField("estimates", "businessId", businessId) : Promise.resolve([]),
+      features.reviewAutopilot ? store.findRecordsByField("review_requests", "businessId", businessId) : Promise.resolve([]),
+      features.reviewAutopilot ? store.findRecordsByField("reviews", "businessId", businessId) : Promise.resolve([]),
+      isCalendarConnected(businessId),
+      features.estimateFollowUp ? listPendingQueue(businessId) : Promise.resolve([]),
+    ]);
+
+    const leadsInWindow = leads.filter((l) => inWindow(l.createdAt));
+    const stats = {
+      missedCallsRescued: leadsInWindow.length,
+      leadsQualified: leadsInWindow.filter((l) => l.status === "qualified" || l.status === "booked").length,
+      appointmentsBooked: leadsInWindow.filter((l) => l.status === "booked").length,
+      estimatesAdded: estimates.filter((e) => inWindow(e.createdAt)).length,
+      openEstimatesTotal: estimates.filter((e) => e.status === "open").length,
+      estimatesAccepted: estimates.filter((e) => e.status === "accepted" && inWindow(e.acceptedAt || e.updatedAt || e.createdAt)).length,
+      reviewRequestsSent: reviewReqs.filter((r) => inWindow(r.createdAt)).length,
+      reviewsResponded: reviews.filter((r) => r.status === "responded" && inWindow(r.respondedAt || r.createdAt)).length,
+    };
+
+    // Mint a short-lived calendar_connect URL for the "Fix →" link. The
+    // dashboard's onboarding token doesn't satisfy /api/calendar/connect
+    // (different purpose), so without this the button 403s.
+    const calendarConnectUrl = signedUrl.buildUrl(
+      config.server.webhookBaseUrl,
+      `/api/calendar/connect/${businessId}`,
+      "calendar_connect",
+      businessId,
+      BILLING_LINK_TTL_SECONDS
+    );
+
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    setOwnerHtmlCsp(res);
+    res.send(dashboardUI.renderDashboardPage({
+      client: ctx.client,
+      stats,
+      calendarConnected,
+      calendarConnectUrl,
+      forwardingVerified: !!ctx.state.forwardingVerified,
+      profileComplete: !!ctx.state.profileComplete,
+      pendingQueueCount: queue.length,
+      features,
+      linkBuilder,
+    }));
+  } catch (err) {
+    logAndFail("Dashboard Page", err, res);
+  }
+});
+
+// Onboarding profile editor — lets the owner replace the hardcoded defaults
+// (services, hours, pricing, emergency definition, financing, review link) that
+// flow into AI prompts. Signed URL because there's no session auth on this app
+// and we don't want random visitors reading a business's profile.
+app.get("/onboarding/:businessId/profile", requireSignedUrl("onboarding", { bindToClientNonce: true }), async (req, res) => {
+  try {
+    const ctx = await onboarding.loadProfileContext(req.params.businessId);
+    if (!ctx) return res.status(404).send("Not found");
+    const qs = new URLSearchParams({ t: req.query.t, e: req.query.e }).toString();
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    setOwnerHtmlCsp(res);
+    res.send(onboarding.renderProfilePage(ctx.client, ctx.state, qs));
+  } catch (err) {
+    logAndFail("Onboarding Profile GET", err, res);
+  }
+});
+
+app.post("/onboarding/:businessId/profile", requireSignedUrl("onboarding", { bindToClientNonce: true }), async (req, res) => {
+  try {
+    const businessId = req.params.businessId;
+    const ctx = await onboarding.loadProfileContext(businessId);
+    if (!ctx) return res.status(404).send("Not found");
+    const parsed = onboarding.parseProfileSubmission(req.body, normalizePhone);
+    if (!parsed.ok) {
+      const qs = new URLSearchParams({ t: req.query.t, e: req.query.e, error: parsed.error }).toString();
+      return res.redirect(303, `/onboarding/${businessId}/profile?${qs}`);
+    }
+    await store.updateRecord("clients", businessId, parsed.updates);
+    await onboarding.updateState(businessId, {
+      profileComplete: true,
+      profileCompletedAt: new Date().toISOString(),
+    });
+    const qs = new URLSearchParams({ t: req.query.t, e: req.query.e, saved: "1" }).toString();
+    res.redirect(303, `/onboarding/${businessId}/profile?${qs}`);
+  } catch (err) {
+    logAndFail("Onboarding Profile POST", err, res);
+  }
+});
+
+// Forwarding self-test — originates a Twilio call to the owner's existing
+// business line from a dedicated test caller number. If call-forwarding is
+// wired correctly, that call hits the client's Twilio DID and the voice webhook
+// credits it to the pending test record, flipping forwardingVerified.
+app.post("/onboarding/:businessId/forwarding-test/start", requireSignedUrl("onboarding", { bindToClientNonce: true }), async (req, res) => {
+  try {
+    const businessId = req.params.businessId;
+    const result = await onboarding.startForwardingTest(businessId, async (officePhone) => {
+      const sid = await originateTestCall(officePhone);
+      return { callSid: sid, testCallerNumber: config.twilio.testCallerNumber };
+    });
+    if (!result.ok) {
+      if (result.error === "not_found") return res.status(404).json({ error: "Business not found" });
+      if (result.error === "no_office_phone") {
+        return res.status(400).json({ error: "Set your business line in the profile first." });
+      }
+      if (result.error === "daily_cap_reached") {
+        return res.status(429).json({ error: "Too many test calls today. Try again tomorrow or reach support." });
+      }
+      return res.status(400).json({ error: result.error });
+    }
+    res.status(202).json({
+      ok: true,
+      reused: !!result.reused,
+      expiresAt: result.test.expiresAt,
+    });
+  } catch (err) {
+    const cid = newCorrelationId();
+    console.error(`[Forwarding Test Start] error=${err.message} cid=${cid}`);
+    res.status(500).json({ error: "Failed to originate test call. Try again in a minute." });
+  }
+});
+
+app.get("/onboarding/:businessId/forwarding-test/status", requireSignedUrl("onboarding", { bindToClientNonce: true }), async (req, res) => {
+  try {
+    const status = await onboarding.getForwardingTestStatus(req.params.businessId);
+    res.json(status);
+  } catch (err) {
+    logAndFail("Forwarding Test Status", err, res);
+  }
+});
+
+// Manual estimate paste form — the escape hatch for owners whose workflow
+// doesn't route through BCC'd email (e.g., they quote over the phone).
+app.get("/onboarding/:businessId/estimates/paste", requireSignedUrl("onboarding", { bindToClientNonce: true }), async (req, res) => {
+  try {
+    const ctx = await onboarding.loadProfileContext(req.params.businessId);
+    if (!ctx) return res.status(404).send("Not found");
+    const qs = new URLSearchParams({ t: req.query.t, e: req.query.e }).toString();
+    const flash = { saved: req.query.saved === "1", error: req.query.error || null };
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    setOwnerHtmlCsp(res);
+    res.send(estimatesUI.renderPastePage(ctx.client, ctx.state, qs, flash));
+  } catch (err) {
+    logAndFail("Estimate Paste GET", err, res);
+  }
+});
+
+app.post("/onboarding/:businessId/estimates/paste", requireSignedUrl("onboarding", { bindToClientNonce: true }), async (req, res) => {
+  try {
+    const businessId = req.params.businessId;
+    const ctx = await onboarding.loadProfileContext(businessId);
+    if (!ctx) return res.status(404).send("Not found");
+    const result = await createEstimateFromPaste(req.body || {}, ctx.client);
+    const qs = new URLSearchParams({
+      t: req.query.t,
+      e: req.query.e,
+      ...(result.ok ? { saved: "1" } : { error: errorMessage(result.error) }),
+    }).toString();
+    res.redirect(303, `/onboarding/${businessId}/estimates/paste?${qs}`);
+  } catch (err) {
+    logAndFail("Estimate Paste POST", err, res);
+  }
+});
+
+app.get("/onboarding/:businessId/estimates/queue", requireSignedUrl("onboarding", { bindToClientNonce: true }), async (req, res) => {
+  try {
+    const businessId = req.params.businessId;
+    const ctx = await onboarding.loadProfileContext(businessId);
+    if (!ctx) return res.status(404).send("Not found");
+    const queue = await listPendingQueue(businessId);
+    const qs = new URLSearchParams({ t: req.query.t, e: req.query.e }).toString();
+    const flash = {
+      saved: req.query.saved ? decodeURIComponent(req.query.saved) : null,
+      error: req.query.error ? decodeURIComponent(req.query.error) : null,
+    };
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    setOwnerHtmlCsp(res);
+    res.send(estimatesUI.renderQueuePage(ctx.client, queue, qs, flash));
+  } catch (err) {
+    logAndFail("Estimate Queue GET", err, res);
+  }
+});
+
+app.post("/onboarding/:businessId/estimates/queue/:queueId/approve", requireSignedUrl("onboarding", { bindToClientNonce: true }), async (req, res) => {
+  try {
+    const { businessId, queueId } = req.params;
+    const ctx = await onboarding.loadProfileContext(businessId);
+    if (!ctx) return res.status(404).send("Not found");
+    const result = await approveQueuedEstimate(queueId, req.body || {}, ctx.client);
+    const qs = new URLSearchParams({
+      t: req.query.t,
+      e: req.query.e,
+      ...(result.ok
+        ? { saved: "Estimate approved — follow-ups start in 24 hours." }
+        : { error: errorMessage(result.error) }),
+    }).toString();
+    res.redirect(303, `/onboarding/${businessId}/estimates/queue?${qs}`);
+  } catch (err) {
+    logAndFail("Estimate Queue Approve", err, res);
+  }
+});
+
+app.post("/onboarding/:businessId/estimates/queue/:queueId/reject", requireSignedUrl("onboarding", { bindToClientNonce: true }), async (req, res) => {
+  try {
+    const { businessId, queueId } = req.params;
+    const ctx = await onboarding.loadProfileContext(businessId);
+    if (!ctx) return res.status(404).send("Not found");
+    const result = await rejectQueuedEstimate(queueId, ctx.client);
+    const qs = new URLSearchParams({
+      t: req.query.t,
+      e: req.query.e,
+      ...(result.ok
+        ? { saved: "Dismissed." }
+        : { error: errorMessage(result.error) }),
+    }).toString();
+    res.redirect(303, `/onboarding/${businessId}/estimates/queue?${qs}`);
+  } catch (err) {
+    logAndFail("Estimate Queue Reject", err, res);
+  }
+});
+
+// Rotate the onboarding-token nonce and return a fresh long-lived wizard link.
+// Requires a currently-valid onboarding token (proof of present access). Any
+// previously-issued onboarding link for this business stops verifying as soon
+// as this rotation commits — useful if the owner suspects a forwarded welcome
+// email or wants to revoke a link that was shared.
+//
+// The new URL is returned in the response body so a browser tab or CLI caller
+// can follow it immediately. No escalation: the caller already proved access
+// to the current onboarding token, which gates the same surface.
+app.post("/onboarding/:businessId/rotate-link", requireSignedUrl("onboarding", { bindToClientNonce: true }), async (req, res) => {
+  try {
+    const businessId = req.params.businessId;
+    const newNonce = await rotateOnboardingTokenNonce(businessId);
+    if (!newNonce) return res.status(404).json({ error: "Not found" });
+    const wizardUrl = signedUrl.buildUrl(
+      config.server.webhookBaseUrl,
+      `/onboarding/${businessId}`,
+      "onboarding",
+      businessId,
+      14 * 24 * 60 * 60,
+      {},
+      newNonce
+    );
+    res.json({ ok: true, wizardUrl });
+  } catch (err) {
+    logAndFail("Rotate Onboarding Link", err, res);
   }
 });
 
@@ -503,18 +1031,55 @@ async function requireActiveAccount(business, res) {
 
 app.post("/webhooks/voice/status", validateTwilioSignature, async (req, res) => {
   try {
-    const { Called, From, CallStatus } = req.body;
+    const { Called, From, CallStatus, CallSid } = req.body;
+    // Twilio retries on any non-2xx and occasionally on network hiccups. Dedup by
+    // (CallSid, CallStatus) so a retry of the same status doesn't create a second
+    // lead + duplicate outbound SMS. Different statuses on the same call (e.g.
+    // ringing → no-answer) are intentionally distinct and pass through.
+    const dedupKey = CallSid ? `${CallSid}:${CallStatus}` : null;
+    if (dedupKey && twilioCallDedup.isProcessed(dedupKey)) {
+      console.log(`[Voice Status] Duplicate CallSid=${CallSid} status=${CallStatus} — acking.`);
+      return res.sendStatus(200);
+    }
+
+    // Forwarding self-test detection runs before the missed-call flow so a
+    // successful test never spawns a Lead Rescue SMS. Fast-path guard: only
+    // bother hitting the DB when From exactly matches the configured test
+    // caller DID. Most US carriers preserve the original CLID when conditional
+    // call-forwarding fires, so this catches the overwhelming majority of real
+    // test calls without adding a DB round-trip to every inbound webhook event.
+    // Carriers that rewrite CLID to the forwarding line are covered by a manual
+    // "Mark verified" escape hatch in the onboarding UI.
+    if (From && Called && From === config.twilio.testCallerNumber) {
+      const businessForTest = await getClientByPhone(Called);
+      if (businessForTest) {
+        const consumed = await onboarding.maybeConsumeForwardingTest({
+          called: Called,
+          from: From,
+          business: businessForTest,
+        });
+        if (consumed) {
+          console.log(`[Voice Status] Forwarding test verified for ${businessForTest.name} (CallSid=${CallSid})`);
+          twilioCallDedup.mark(dedupKey);
+          return res.sendStatus(200);
+        }
+      }
+    }
+
     if (CallStatus === "no-answer" || CallStatus === "busy" || CallStatus === "failed") {
       const business = await getClientByPhone(Called);
       if (business && await requireActiveAccount(business, res)) {
         if (!hasFeature(business, FEATURES.LEAD_RESCUE)) {
           console.log(`[Voice Status] ${business.name} not subscribed to Lead Rescue — skipping`);
+          twilioCallDedup.mark(dedupKey);
           return res.sendStatus(200);
         }
         await handleMissedCall(From, business);
+        twilioCallDedup.mark(dedupKey);
         res.sendStatus(200);
       }
     } else {
+      twilioCallDedup.mark(dedupKey);
       res.sendStatus(200);
     }
   } catch (err) {
@@ -526,7 +1091,13 @@ app.post("/webhooks/voice/status", validateTwilioSignature, async (req, res) => 
 
 app.post("/webhooks/sms", validateTwilioSignature, async (req, res) => {
   try {
-    const { To, From, Body } = req.body;
+    const { To, From, Body, MessageSid } = req.body;
+    // Dedup retries by MessageSid — otherwise the pipeline runs twice, the customer
+    // gets two identical AI-generated replies, and the quota counter ticks twice.
+    if (MessageSid && twilioSmsDedup.isProcessed(MessageSid)) {
+      console.log(`[SMS] Duplicate MessageSid=${MessageSid} — acking.`);
+      return res.sendStatus(200);
+    }
     const business = await getClientByPhone(To);
     if (!business) {
       console.warn(`[SMS] No business found for number ${To}`);
@@ -545,6 +1116,7 @@ app.post("/webhooks/sms", validateTwilioSignature, async (req, res) => {
     } else if (!estimateReply) {
       console.log(`[SMS] ${business.name} has no pipeline for this message — ignoring`);
     }
+    twilioSmsDedup.mark(MessageSid);
     res.sendStatus(200);
   } catch (err) {
     const cid = newCorrelationId();
@@ -677,6 +1249,40 @@ app.get("/api/calendar/callback", async (req, res) => {
   }
 });
 
+// --- GMAIL SYSTEM MAILBOX (support@climateflow.ai) ---
+//
+// Admin-only. Connects the shared mailbox that receives Google review
+// notifications and BCC'd estimate emails, both routed per-business via
+// plus-addressing (support+reviews-<businessId>, support+estimates-<businessId>).
+app.get("/api/gmail/connect", requireApiKey, async (req, res) => {
+  try {
+    res.redirect(await gmailIngest.getAuthUrl());
+  } catch (err) {
+    logAndFail("Gmail Connect", err, res);
+  }
+});
+
+app.get("/api/gmail/callback", async (req, res) => {
+  try {
+    const { code, state } = req.query;
+    if (!code || !state) return res.status(400).send("Missing code or state");
+    const ok = await gmailIngest.consumeOAuthState(state);
+    if (!ok) return res.status(403).send("Invalid or expired OAuth state. Please retry the connect flow.");
+    await gmailIngest.handleOAuthCallback(code);
+    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Connected</title><style>body{background:#070c18;color:#f1f5f9;font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center}.box{background:#0d1526;border:1px solid #1e3a5f;border-radius:12px;padding:48px;max-width:420px}h1{color:#34d399;font-size:28px;margin-bottom:12px}p{color:#94a3b8;line-height:1.6}</style></head><body><div class="box"><h1>✓ Mailbox Connected</h1><p>The ClimateFlow system mailbox is now ingesting inbound review and estimate emails.</p></div></body></html>`);
+  } catch (err) {
+    logAndFail("Gmail OAuth", err, res);
+  }
+});
+
+app.get("/api/gmail/status", requireApiKey, async (req, res) => {
+  try {
+    res.json({ connected: await gmailIngest.isConnected() });
+  } catch (err) {
+    logAndFail("Gmail Status", err, res);
+  }
+});
+
 app.get("/api/calendar/status/:businessId", requireApiKey, async (req, res) => {
   try {
     res.json({ connected: await isCalendarConnected(req.params.businessId) });
@@ -740,7 +1346,9 @@ app.get("/api/dashboard/:businessId", requireApiKey, async (req, res) => {
 
 // --- CRON HELPERS ---
 
-async function runConcurrent(items, fn, limit = 10) {
+// Process items in parallel batches. delayMs throttles between batches to avoid
+// spiking Anthropic TPM limits when 100 clients all get AI follow-ups in one tick.
+async function runConcurrent(items, fn, limit = 10, delayMs = 0) {
   const results = [];
   for (let i = 0; i < items.length; i += limit) {
     const settled = await Promise.allSettled(items.slice(i, i + limit).map(fn));
@@ -748,8 +1356,32 @@ async function runConcurrent(items, fn, limit = 10) {
       if (outcome.status === "rejected") console.error("[Cron] Task failed:", outcome.reason?.message);
       else results.push(outcome.value);
     }
+    if (delayMs > 0 && i + limit < items.length) {
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
   }
   return results;
+}
+
+// Wrap a cron body so a slow run can't overlap the next tick.
+// If a job is still running when the timer fires, the new tick is skipped
+// and logged — prevents cascading backlogs at 100+ clients.
+const cronRunning = {};
+function guardedCron(name, fn) {
+  return async () => {
+    if (cronRunning[name]) {
+      console.warn(`[Cron] ${name} already running — skipping this tick`);
+      return;
+    }
+    cronRunning[name] = true;
+    try {
+      await fn();
+    } catch (err) {
+      console.error(`[Cron] ${name} error: ${err.message}`);
+    } finally {
+      cronRunning[name] = false;
+    }
+  };
 }
 
 // --- CRON JOBS ---
@@ -758,28 +1390,29 @@ async function runConcurrent(items, fn, limit = 10) {
 // that import this module for its Express app don't keep the event loop alive
 // on cron timers.
 function registerCronJobs() {
-cron.schedule("0 9-18 * * 1-6", async () => {
+cron.schedule("0 9-18 * * 1-6", guardedCron("estimate-followup", async () => {
   const all = await listClients();
   const clients = all.filter((c) => !c.suspended && hasFeature(c, FEATURES.ESTIMATE_FOLLOWUP));
   console.log(`[Cron] Estimate follow-ups: ${clients.length}/${all.length} clients`);
+  // delayMs=200: throttle AI calls across 100 clients — 10 batches × 200ms = 2s extra
   await runConcurrent(clients, async (client) => {
     const results = await processFollowUps(client);
     if (results.length > 0) console.log(`[Cron] Sent ${results.length} follow-ups for ${client.name}`);
-  });
-});
+  }, 10, 200);
+}));
 
-cron.schedule("*/30 * * * *", async () => {
+cron.schedule("*/30 * * * *", guardedCron("review-check", async () => {
   const all = await listClients();
   const clients = all.filter((c) => !c.suspended && hasFeature(c, FEATURES.REVIEW_AUTOPILOT));
   console.log(`[Cron] Review check: ${clients.length}/${all.length} clients`);
   await runConcurrent(clients, async (client) => {
     const results = await checkForNewReviews(client, respondToReview);
     if (results.length > 0) console.log(`[Cron] Processed ${results.length} reviews for ${client.name}`);
-  });
-});
+  }, 10, 200);
+}));
 
 // Monday 8am: send each active client a digest of last week's activity.
-cron.schedule("0 8 * * 1", async () => {
+cron.schedule("0 8 * * 1", guardedCron("weekly-digest", async () => {
   const all = await listClients();
   const active = all.filter((c) => !c.suspended);
   console.log(`[Weekly Digest] Sending to ${active.length} clients`);
@@ -792,12 +1425,12 @@ cron.schedule("0 8 * * 1", async () => {
     } catch (err) {
       console.error(`[Weekly Digest] Failed for ${client.name}: ${err.message}`);
     }
-  });
-});
+  }, 10, 100);
+}));
 
 // Hourly: nudge clients who signed up 24–48h ago but still haven't connected
 // their Google Calendar. After 48h we stop nudging to avoid spam.
-cron.schedule("0 * * * *", async () => {
+cron.schedule("0 * * * *", guardedCron("calendar-nudge", async () => {
   const all = await listClients();
   const now = Date.now();
   const H24 = 24 * 60 * 60 * 1000;
@@ -825,11 +1458,108 @@ cron.schedule("0 * * * *", async () => {
       console.error(`[Onboarding Nudge] Failed for ${client.name}: ${err.message}`);
     }
   }
-});
+}));
+
+// Hourly: send review requests to customers whose appointment was booked 24h+ ago.
+// reviewDue is set on the lead when booking succeeds; reviewRequested guards against
+// duplicate sends if the cron fires more than once before the flag is written.
+cron.schedule("20 * * * *", guardedCron("review-trigger", async () => {
+  const all = await listClients();
+  const clients = all.filter((c) => !c.suspended && hasFeature(c, FEATURES.REVIEW_AUTOPILOT));
+  const now = new Date();
+
+  await runConcurrent(clients, async (client) => {
+    const bookedLeads = await store.findRecordsByFields("leads", {
+      businessId: client.id,
+      status: "booked",
+    });
+    const ready = bookedLeads.filter((l) => !l.reviewRequested && l.reviewDue && new Date(l.reviewDue) <= now);
+    for (const lead of ready) {
+      try {
+        const customerName = lead.customerName || "Valued Customer";
+        const jobType = lead.serviceType || "HVAC service";
+        await requestReview(lead.phone, customerName, jobType, client);
+        await store.updateRecord("leads", lead.id, { reviewRequested: true });
+        console.log(`[Review Trigger] Sent review request to ${customerName} (${lead.phone})`);
+      } catch (err) {
+        console.error(`[Review Trigger] Failed for lead ${lead.id}: ${err.message}`);
+      }
+    }
+  }, 10, 200);
+}));
+
+// Every minute: poll the system Gmail mailbox and route ingested emails to the
+// review / estimate pipelines via plus-addressing. Skeleton only right now —
+// the per-pipeline parsers land in #23 (reviews) and #24 (estimates).
+cron.schedule("* * * * *", guardedCron("gmail-ingest", async () => {
+  const result = await gmailIngest.pollInbox({
+    reviewHandler: async ({ businessId, message, body, headers }) => {
+      try {
+        await ingestReviewEmail({
+          businessId,
+          messageId: message.id,
+          subject: headers.subject || "",
+          body,
+          fromHeader: headers.from || null,
+        });
+        return true;
+      } catch (err) {
+        console.error(`[Gmail] review ingest failed id=${message.id}: ${err.message}`);
+        return false;
+      }
+    },
+    estimateHandler: async ({ businessId, message, body, headers }) => {
+      try {
+        await ingestEstimateEmail({
+          businessId,
+          messageId: message.id,
+          subject: headers.subject || "",
+          body,
+          fromHeader: headers.from || null,
+        });
+        return true;
+      } catch (err) {
+        console.error(`[Gmail] estimate ingest failed id=${message.id}: ${err.message}`);
+        return false;
+      }
+    },
+  });
+  if (result.skipped) return;
+  if (result.processed > 0) {
+    console.log(`[Cron] Gmail ingest: processed=${result.processed} routed=${result.routed} skipped=${result.skipped}`);
+  }
+}));
+
+// Every 5 minutes: drain the SMS retry queue. Pipelines enqueue outbound messages
+// here when Twilio rejects the first try; backoff is handled inside smsRetry.
+cron.schedule("*/5 * * * *", guardedCron("sms-retry-drain", async () => {
+  const result = await smsRetry.processPending();
+  if (result.processed > 0) {
+    console.log(`[Cron] SMS retry drain: processed=${result.processed} succeeded=${result.succeeded} failed=${result.failed}`);
+  }
+}));
+
+// 1st of month at 8am: send each active client their monthly reputation report.
+cron.schedule("0 8 1 * *", guardedCron("monthly-report", async () => {
+  const all = await listClients();
+  const active = all.filter((c) => !c.suspended && hasFeature(c, FEATURES.REVIEW_AUTOPILOT));
+  console.log(`[Monthly Report] Sending to ${active.length} clients`);
+  const { since, until } = lastMonthWindow();
+  await runConcurrent(active, async (client) => {
+    try {
+      const stats = await getMonthlyReputationStats(client.id, since, until);
+      await sendMonthlyReportEmail(client.ownerEmail, client.ownerName, client.name, stats);
+      console.log(`[Monthly Report] Sent to ${client.name}`);
+    } catch (err) {
+      console.error(`[Monthly Report] Failed for ${client.name}: ${err.message}`);
+    }
+  }, 10, 100);
+}));
 
 // Hourly cleanup: expire abandoned pending signups (cancel their Stripe subs
-// first so we don't leak customers) and purge consumed / expired OAuth states.
-cron.schedule("15 * * * *", async () => {
+// first so we don't leak customers), purge OAuth states, and sweep the in-memory
+// rate-limit Map so it doesn't grow unbounded on a long-lived dyno.
+cron.schedule("15 * * * *", guardedCron("cleanup", async () => {
   try {
     const now = Date.now();
 
@@ -849,16 +1579,26 @@ cron.schedule("15 * * * *", async () => {
     }
 
     const oauthPurged = await store.deleteExpiredRecords(OAUTH_STATES, now);
+    const gmailOauthPurged = await store.deleteExpiredRecords(gmailIngest.OAUTH_STATES, now);
+    // Gmail processed-id log TTLs out after 7 days — older rows are just noise.
+    const gmailProcessedPurged = await store.deleteExpiredRecords(gmailIngest.PROCESSED, now);
     // Daily AI-usage counters carry expiresAt ~48h out; sweep anything past-due.
     const aiUsagePurged = await store.deleteExpiredRecords("ai_usage", now);
 
-    if (stalePending.length || oauthPurged || aiUsagePurged) {
-      console.log(`[Cleanup] pending_signups=${stalePending.length} oauth_states=${oauthPurged} ai_usage=${aiUsagePurged}`);
+    // Purge expired in-memory rate-limit buckets — prevents unbounded Map growth
+    // on a long-running dyno at 100+ clients hitting webhooks continuously.
+    let rateLimitPurged = 0;
+    for (const [key, entry] of rateLimitStore) {
+      if (now > entry.resetAt) { rateLimitStore.delete(key); rateLimitPurged++; }
+    }
+
+    if (stalePending.length || oauthPurged || aiUsagePurged || rateLimitPurged || gmailOauthPurged || gmailProcessedPurged) {
+      console.log(`[Cleanup] pending_signups=${stalePending.length} oauth_states=${oauthPurged} gmail_oauth=${gmailOauthPurged} gmail_processed=${gmailProcessedPurged} ai_usage=${aiUsagePurged} rate_limit_buckets=${rateLimitPurged}`);
     }
   } catch (err) {
     console.error("[Cleanup] Error:", err.message);
   }
-});
+}));
 }
 
 // --- ERROR HANDLING ---
